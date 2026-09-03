@@ -38,12 +38,14 @@ git clone --depth 1 https://github.com/microsoft/vcpkg.git "$HOME\vcpkg"
 & "$HOME\vcpkg\vcpkg.exe" install "libheif:x64-windows"
 ```
 
-`crates/pipeline`（P1）接入 `libheif-rs` 时的环境变量约定：
+**P0 spike 已验证**（2026-09-04，独立项目 `~/libheif-spike`）：`libheif-rs 3.0` + `libheif-sys 5.3.1` 对接 vcpkg `libheif 1.23.2` 链接成功，`version() = [1,23,2]`，解码插件 1 个（libde265）、编码插件 2 个（x265）。构建/运行环境变量约定（`crates/pipeline` P1 接入时沿用）：
 
-- `RUSTFLAGS` 不需要；`libheif-sys` 在 Windows 走 vcpkg 探测路径，确保 `VCPKG_ROOT=$HOME\vcpkg`
-- 运行时需要 `vcpkg\installed\x64-windows\bin` 在 `PATH`（开发期）；正式发布时把所需 DLL 随安装包捆绑
+- `VCPKG_ROOT` = `%USERPROFILE%\vcpkg`
+- `VCPKGRS_TRIPLET` = `x64-windows`（libheif-sys 默认找 `x64-windows-static-md`，会报"not installed"）
+- `VCPKGRS_DYNAMIC` = `1`（使用动态库三元组必须显式声明）
+- 运行时 `PATH` 需含 `%USERPROFILE%\vcpkg\installed\x64-windows\bin`（开发期）；正式发布时把所需 DLL 随安装包捆绑
 
-macOS / Linux：`brew install libheif` 或 `apt install libheif-dev`。
+macOS / Linux：`brew install libheif` 或 `apt install libheif-dev`（libheif-rs 走 pkg-config，无需上述环境变量）。
 
 ### 验证安装
 
