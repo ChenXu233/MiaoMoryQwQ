@@ -26,8 +26,12 @@ export const commands = {
 	modelStatus: () => __TAURI_INVOKE<ModelStatus>("model_status"),
 	/**  下载模型资产（后台线程；进度经事件上报，完成后加载并广播就绪） */
 	downloadModels: () => typedError<null, string>(__TAURI_INVOKE("download_models")),
-	/**  中文语义搜索（规格 0003）：文本编码 → KNN → join assets */
-	searchAssets: (query: string, topK: number | null) => typedError<SearchPage, string>(__TAURI_INVOKE("search_assets", { query, topK })),
+	/**  混合检索（规格 0003/0005）：语义流 + 文本流 → RRF（k=60）融合，过滤前置 */
+	searchAssets: (query: string, topK: number | null, filters: {
+	taken_from: number | null,
+	taken_to: number | null,
+	kind: string | null,
+} | null) => typedError<SearchPage, string>(__TAURI_INVOKE("search_assets", { query, topK, filters })),
 	/**  重建全部向量索引（模型变更/量化策略变更时）；worker 轮询发现空队列后全量重嵌 */
 	reindexAll: () => typedError<number, string>(__TAURI_INVOKE("reindex_all")),
 };
@@ -111,16 +115,26 @@ export type ModelStatus = {
 	files_missing: string[],
 };
 
+/**  检索过滤器（日期区间 / 类型） */
+export type SearchFilters = {
+	taken_from: number | null,
+	taken_to: number | null,
+	kind: string | null,
+};
+
 export type SearchHit = {
 	summary: AssetSummary,
-	/**  归一相似度（1 - L2²/4），越大越相关 */
+	/**  RRF 归一分（0~1），越大越相关 */
 	score: number | null,
+	/**  命中来源：both / semantic / text（排序可解释，白皮书 §4.6） */
+	matched: string,
 };
 
 export type SearchPage = {
 	items: SearchHit[],
 	model_ready: boolean,
 	pending_indexing: number,
+	available_years: string[],
 };
 
 export type TimelinePage = {

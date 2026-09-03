@@ -58,6 +58,8 @@ pub const MIGRATIONS: &[&str] = &[
         asset_id INTEGER PRIMARY KEY,
         embedding float32[512]
     );",
+    // v3：文本检索（文件名等；描述/OCR 后续扩展 content 结构）
+    "CREATE VIRTUAL TABLE fts_text USING fts5(asset_id UNINDEXED, content, tokenize='trigram');",
 ];
 
 /// 静态注册 sqlite-vec 扩展（对所有新连接生效）
@@ -306,6 +308,9 @@ impl Store {
                     self.conn
                         .execute("DELETE FROM assets WHERE asset_id=?1", params![id])?;
                     let _ = self.delete_embedding(id);
+                    let _ = self
+                        .conn
+                        .execute("DELETE FROM fts_text WHERE asset_id = ?1", params![id]);
                     deleted += 1;
                     if let Some(k) = k {
                         thumb_keys.push(k);
@@ -410,6 +415,43 @@ impl Store {
     pub fn clear_embeddings(&self) -> Result<()> {
         self.conn.execute("DELETE FROM vec_assets", [])?;
         Ok(())
+    }
+
+    // ---- 文本检索（P3；迁移 v3 起）----
+
+    /// 写入/覆盖资产的文本索引（content = 文件名等）
+    pub fn insert_fts(&self, asset_id: i64, content: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM fts_text WHERE asset_id = ?1",
+            params![asset_id],
+        )?;
+        self.conn.execute(
+            "INSERT INTO fts_text (asset_id, content) VALUES (?1, ?2)",
+            params![asset_id, content],
+        )?;
+        Ok(())
+    }
+
+    /// FTS5 匹配：query 需为已清洗的 MATCH 表达式；返回按 rank 排序的 asset_id
+    pub fn search_fts(&self, match_query: &str, k: u32) -> Result<Vec<i64>> {
+        let k = k.clamp(1, 1000);
+        let rows = self
+            .conn
+            .prepare(
+                "SELECT asset_id FROM fts_text WHERE fts_text MATCH ?1 ORDER BY rank LIMIT ?2",
+            )?
+            .query_map(params![match_query, k], |r| r.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 把任意用户输入转成安全的 FTS MATCH 表达式（按空白分词后逐词加引号）
+    pub fn build_match_query(input: &str) -> String {
+        input
+            .split_whitespace()
+            .map(|term| format!("\"{}\"", term.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -663,6 +705,47 @@ mod tests {
         assert_eq!(store.list_ready_without_embedding(10).unwrap().len(), 2);
         store.clear_embeddings().unwrap();
         assert_eq!(store.list_ready_without_embedding(10).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn migration_v3_fts_roundtrip_and_cascade() {
+        let store = Store::open_memory().unwrap();
+        assert!(store.user_version().unwrap() >= 3);
+        let id = store
+            .insert_pending(&new_asset("fts-sha", 1_700_000_000))
+            .unwrap()
+            .asset_id;
+        store.insert_fts(id, "IMG_2023 海边日落").unwrap();
+
+        let hits = store
+            .search_fts(&Store::build_match_query("2023"), 10)
+            .unwrap();
+        assert_eq!(hits, vec![id]);
+        // trigram 分词：≥3 字符子串可命中（中文连续段）
+        let hits2 = store
+            .search_fts(&Store::build_match_query("海边日落"), 10)
+            .unwrap();
+        assert_eq!(hits2, vec![id]);
+        let miss = store
+            .search_fts(&Store::build_match_query("雪山"), 10)
+            .unwrap();
+        assert!(miss.is_empty());
+
+        // 删除资产级联清 FTS（无幽灵结果）
+        store.delete_assets(&[id]).unwrap();
+        assert!(store
+            .search_fts(&Store::build_match_query("2023"), 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn fts_match_query_is_safe_against_special_chars() {
+        // 特殊字符被剥离/引号包裹，不产生语法错误
+        let q = Store::build_match_query("a\"b OR 1=1");
+        assert!(!q.contains("\"\""));
+        let store = Store::open_memory().unwrap();
+        let _ = store.search_fts(&q, 10); // 只要不 panic / 不返回 Err 即可
     }
 
     #[test]

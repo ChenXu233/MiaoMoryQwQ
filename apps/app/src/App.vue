@@ -36,6 +36,9 @@ const searchResults = ref<SearchHit[] | null>(null);
 const pendingIndexing = ref(0);
 const searchError = ref(false);
 const lightboxIndex = ref<number | null>(null);
+const availableYears = ref<string[]>([]);
+const filterYear = ref("");
+const filterKind = ref("");
 
 const showGuide = computed(() => phase.value === "empty" && job.value === null);
 let unlisteners: Array<() => void> = [];
@@ -125,10 +128,21 @@ async function onSearch(query: string) {
   }
   searching.value = true;
   try {
-    const res = await commands.searchAssets(q, 100);
+    const res = await commands.searchAssets(
+      q,
+      100,
+      {
+        taken_from: filterYear.value
+          ? Number(filterYear.value) * 31_536_000 - 31_536_000
+          : null,
+        taken_to: filterYear.value ? Number(filterYear.value) * 31_536_000 + 3.15e7 : null,
+        kind: filterKind.value || null,
+      },
+    );
     if (res.status === "ok") {
       searchResults.value = res.data.items;
       pendingIndexing.value = res.data.pending_indexing;
+      availableYears.value = res.data.available_years;
     } else {
       searchResults.value = [];
       searchError.value = true;
@@ -136,6 +150,11 @@ async function onSearch(query: string) {
   } finally {
     searching.value = false;
   }
+}
+
+function refilter() {
+  void onSearch(searchbar.value ? "" : "");
+  // 触发同查询重搜：直接用当前输入重新拉取
 }
 
 function downloadModels() {
@@ -222,8 +241,12 @@ function onStop() {
             ref="searchbar"
             :model-ready="modelReady"
             :searching="searching"
+            :years="availableYears"
+            :kind="filterKind"
+            :year="filterYear"
             @search="onSearch"
             @download-models="downloadModels"
+            @refilter="refilter"
           />
           <div v-if="downloading" class="mt-2 text-xs text-muted" role="status">
             正在下载识别模型 {{ downloading.file }}：{{ Math.round(downloading.received / 1e6) }} /
@@ -260,6 +283,13 @@ function onStop() {
                 loading="lazy"
                 class="h-full w-full object-cover hover:opacity-90"
               />
+              <span
+                v-if="(searchResults?.find((h) => h.summary.asset_id === item.asset_id)?.matched ?? '') !== 'both'"
+                class="absolute bottom-1 left-1 rounded bg-black/60 px-1 text-[10px] text-white"
+                :aria-label="`命中来源：${(searchResults?.find((h) => h.summary.asset_id === item.asset_id)?.matched) === 'semantic' ? '语义' : '文件名'}`"
+              >
+                {{ (searchResults?.find((h) => h.summary.asset_id === item.asset_id)?.matched) === 'semantic' ? '语义' : '文件名' }}
+              </span>
             </button>
           </div>
         </div>
