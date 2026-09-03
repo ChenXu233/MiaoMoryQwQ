@@ -11,8 +11,8 @@
 
 **MiaoMory**：个人媒体语义索引引擎。定位为"胶水/感知引擎"——摄取、分析、索引与检索个人照片/视频/音频，不存储原始媒体文件。
 
-- 技术栈：Tauri v2（桌面优先）+ Rust + React/TypeScript + SQLite/sqlite-vec + ONNX Runtime（ort）
-- 当前阶段：**规范先行**，代码尚未初始化
+- 技术栈：Tauri v2（桌面优先）+ Rust + Vue 3/TypeScript + SQLite/sqlite-vec + ONNX Runtime（ort）（ADR-0009）
+- 当前阶段：P0 初始化中（代码骨架搭建）
 - 产品与架构基线：`docs/whitepaper/whitepaperv1.md`（内容版本 v0.2）
 
 ## 2. 铁律（不可协商）
@@ -96,7 +96,7 @@
 
 1. 文档先行：涉及的功能规格/体验规格已写并登记索引
 2. 实现：Rust 命令/查询 + pipeline 阶段 + UI + 单元测试
-3. e2e：至少一条主链路（小规模固定人工数据集）
+3. 验收：TDD 单元测试 + 项目所有者手工验证清单（e2e 自动化延后，ADR-0010）
 4. 质量：lint/clippy/tsc 通过；契约生成无漂移
 5. 性能：涉及模型/索引变更时，一次性人工基准已记录
 
@@ -104,7 +104,7 @@
 
 ## 8. 质量与验证策略（ADR-0004）
 
-- **CI 常驻**：格式 / lint / clippy / tsc / 单元测试 / 契约生成一致性 / e2e 体验流程（小规模固定数据集，人工提供）。
+- **CI 常驻**：格式 / lint / clippy / tsc / 单元测试 / 契约生成一致性 / 三平台构建矩阵（e2e 延后，ADR-0010）。
 - **一次性人工基准**：模型推理速度、sqlite-vec 目标规模验收；结果记录 `docs/ux/latency-budget.md`；模型 / ORT / sqlite-vec / Tauri 大版本升级时触发重验。
 - **禁止清单**：常驻 10k 合成照片 bench；合成种子数据生成器（延后）。
 - **性能问题归因顺序**：先查我们的代码（契约开销、N+1、解码管线），再查模型，最后才怀疑数据库。
