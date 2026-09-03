@@ -1,0 +1,35 @@
+/* MiaoMory 设计基线：极简 + 颜色 token（ADR-0009） */
+@import "tailwindcss";
+@import "./design/tokens.css";
+
+/* Tailwind v4 主题映射：语义 token → 工具类（bg-bg / text-fg / border-line …） */
+@theme {
+  --color-bg: var(--mm-bg);
+  --color-surface: var(--mm-surface);
+  --color-fg: var(--mm-fg);
+  --color-muted: var(--mm-muted);
+  --color-line: var(--mm-border);
+  --color-accent: var(--mm-accent);
+  --color-accent-fg: var(--mm-accent-fg);
+  --color-danger: var(--mm-danger);
+  --color-success: var(--mm-success);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+  background-color: var(--mm-bg);
+  color: var(--mm-fg);
+  -webkit-font-smoothing: antialiased;
+}

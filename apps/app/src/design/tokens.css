@@ -1,0 +1,27 @@
+/*
+ * MiaoMory 颜色 token（ADR-0009）：语义命名，组件只允许引用这里的变量。
+ * 亮色为默认；暗色经 document.documentElement.dataset.theme = "dark" 启用。
+ */
+:root {
+  --mm-bg: #fafaf9; /* 页面背景（stone-50） */
+  --mm-surface: #ffffff; /* 卡片/浮层背景 */
+  --mm-fg: #1c1917; /* 主文本（stone-900） */
+  --mm-muted: #78716c; /* 次级文本（stone-500） */
+  --mm-border: #e7e5e4; /* 描边（stone-200） */
+  --mm-accent: #0f766e; /* 主操作色（teal-700） */
+  --mm-accent-fg: #ffffff; /* 主操作色上的文本 */
+  --mm-danger: #b91c1c; /* 错误（red-700） */
+  --mm-success: #15803d; /* 成功（green-700） */
+}
+
+[data-theme="dark"] {
+  --mm-bg: #0c0a09;
+  --mm-surface: #1c1917;
+  --mm-fg: #fafaf9;
+  --mm-muted: #a8a29e;
+  --mm-border: #292524;
+  --mm-accent: #2dd4bf;
+  --mm-accent-fg: #042f2e;
+  --mm-danger: #f87171;
+  --mm-success: #4ade80;
+}
