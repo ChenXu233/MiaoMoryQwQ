@@ -120,9 +120,10 @@ pub trait StorageAdapter {
     fn delete(&self, key: &str) -> Result<(), ErrorCode>;
 }
 
-/// 推理抽象：唯一实现为 `crates/embed`（P2，ONNX Runtime）
-pub trait Embedder {
+/// 推理抽象：唯一实现为 `crates/embed`（P2，ONNX Runtime；中文图文检索需文本+图像两侧）
+pub trait Embedder: Send + Sync {
     fn embed_images(&self, batch: &[DecodedImage]) -> Result<Vec<Vec<f32>>, ErrorCode>;
+    fn embed_text(&self, text: &str) -> Result<Vec<f32>, ErrorCode>;
 }
 
 /// 向量索引抽象：唯一实现为 sqlite-vec（ADR-0002；更新 = 删除 + 重插）

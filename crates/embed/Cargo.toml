@@ -1,0 +1,28 @@
+[package]
+name = "mm-embed"
+description = "MiaoMory 推理层：ort 推理 + 模型下载（唯一允许碰 ONNX 的 crate，白皮书 §4.1）"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+mm-core = { path = "../core" }
+ort = "=2.0.0-rc.13"
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = "0.11"
+hex = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+ort = { version = "=2.0.0-rc.13", features = ["directml"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "=2.0.0-rc.13", features = ["coreml"] }
+
+[dev-dependencies]
+tempfile = "3"
