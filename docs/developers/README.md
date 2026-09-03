@@ -11,10 +11,10 @@
 | 文档 | 内容 | 状态 |
 | :--- | :--- | :--- |
 | `00-setup.md` | 环境准备（Rust/Tauri/Node/vcpkg+libheif） | 现行 |
-| `01-architecture.md` | 架构与目录（ADR-0005 落地细节） | 待 P1 编写 |
-| `02-workflow.md` | 垂直切片工作流与 DoD | 待 P1 编写 |
+| `01-architecture.md` | 架构与目录（ADR-0005 落地细节） | 现行 |
+| `02-workflow.md` | 垂直切片工作流与 DoD | 现行 |
 | `03-ipc-contracts.md` | specta 契约生成与变更流程 | 现行 |
-| `04-testing.md` | 测试策略与手工验证清单约定 | 待 P1 编写 |
+| `04-testing.md` | 测试策略与手工验证清单约定 | 现行 |
 | `05-release.md` | 构建/签名/自动更新器 | 现行（更新器端到端待 P3） |
 
 ## 环境速览（白皮书附录 A）
