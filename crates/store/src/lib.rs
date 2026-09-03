@@ -54,6 +54,8 @@ pub const MIGRATIONS: &[&str] = &[
 ];
 
 /// 静态注册 sqlite-vec 扩展（对所有新连接生效）
+// transmute 目标签名由 sqlite3_auto_extension 形参决定，此处必须省略注解
+#[allow(clippy::missing_transmute_annotations)]
 fn register_vec_extension() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| unsafe {
@@ -131,7 +133,9 @@ impl Store {
     }
 
     fn migrate(&self) -> Result<()> {
-        let current: i64 = self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let current: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
         for (idx, sql) in MIGRATIONS.iter().enumerate() {
             let version = (idx + 1) as i64;
             if version <= current {
@@ -167,14 +171,24 @@ impl Store {
         )?;
         if inserted > 0 {
             let id = self.conn.last_insert_rowid();
-            return Ok(InsertOutcome { asset_id: id, duplicated: false });
+            return Ok(InsertOutcome {
+                asset_id: id,
+                duplicated: false,
+            });
         }
         let existing: Option<i64> = self
             .conn
-            .query_row("SELECT asset_id FROM assets WHERE sha256 = ?1", params![new.sha256], |r| r.get(0))
+            .query_row(
+                "SELECT asset_id FROM assets WHERE sha256 = ?1",
+                params![new.sha256],
+                |r| r.get(0),
+            )
             .optional()?;
         match existing {
-            Some(id) => Ok(InsertOutcome { asset_id: id, duplicated: true }),
+            Some(id) => Ok(InsertOutcome {
+                asset_id: id,
+                duplicated: true,
+            }),
             None => Err(StoreError::Core(ErrorCode::StoreFailed)),
         }
     }
@@ -194,7 +208,16 @@ impl Store {
         self.conn.execute(
             "UPDATE assets SET status='ready', width=?2, height=?3, taken_at=?4, year=?5,
              mime=?6, exif=?7, thumb_key=?8, error_code=NULL WHERE asset_id=?1",
-            params![asset_id, width, height, taken_at, year_of(taken_at), mime, exif_json, thumb_key],
+            params![
+                asset_id,
+                width,
+                height,
+                taken_at,
+                year_of(taken_at),
+                mime,
+                exif_json,
+                thumb_key
+            ],
         )?;
         Ok(())
     }
@@ -221,15 +244,13 @@ impl Store {
     }
 
     pub fn count(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COUNT(*) FROM assets", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM assets", [], |r| r.get(0))?)
     }
 
     /// 时间轴分页：taken_at 降序 keyset 游标（taken_at, asset_id）
-    pub fn list_page(
-        &self,
-        cursor: Option<(i64, i64)>,
-        page_size: u32,
-    ) -> Result<Vec<AssetRow>> {
+    pub fn list_page(&self, cursor: Option<(i64, i64)>, page_size: u32) -> Result<Vec<AssetRow>> {
         let page_size = page_size.clamp(1, 500);
         let sql = "SELECT asset_id, sha256, storage_key, kind, size, width, height,
                           taken_at, year, thumb_key, status, error_code
@@ -267,11 +288,16 @@ impl Store {
         for &id in ids {
             let key: Option<Option<String>> = self
                 .conn
-                .query_row("SELECT thumb_key FROM assets WHERE asset_id=?1", params![id], |r| r.get(0))
+                .query_row(
+                    "SELECT thumb_key FROM assets WHERE asset_id=?1",
+                    params![id],
+                    |r| r.get(0),
+                )
                 .optional()?;
             match key {
                 Some(k) => {
-                    self.conn.execute("DELETE FROM assets WHERE asset_id=?1", params![id])?;
+                    self.conn
+                        .execute("DELETE FROM assets WHERE asset_id=?1", params![id])?;
                     deleted += 1;
                     if let Some(k) = k {
                         thumb_keys.push(k);
@@ -298,9 +324,10 @@ impl Store {
 
     /// 重试失败项：清 error 回 pending（pipeline 下一轮按哈希幂等处理）
     pub fn reset_failed(&self) -> Result<usize> {
-        Ok(self
-            .conn
-            .execute("UPDATE assets SET status='pending', error_code=NULL WHERE status='failed'", [])?)
+        Ok(self.conn.execute(
+            "UPDATE assets SET status='pending', error_code=NULL WHERE status='failed'",
+            [],
+        )?)
     }
 }
 
@@ -352,7 +379,11 @@ fn year_of(taken_at: i64) -> String {
     let mp = (5 * doy + 2) / 153;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     // 1、2 月属于前一个"三月年首年"，回正为日历年
-    if month <= 2 { (y + 1).to_string() } else { y.to_string() }
+    if month <= 2 {
+        (y + 1).to_string()
+    } else {
+        y.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -390,9 +421,13 @@ mod tests {
     #[test]
     fn insert_is_deduplicated_by_sha() {
         let store = Store::open_memory().unwrap();
-        let first = store.insert_pending(&new_asset("aaa", 1_700_000_000)).unwrap();
+        let first = store
+            .insert_pending(&new_asset("aaa", 1_700_000_000))
+            .unwrap();
         assert!(!first.duplicated);
-        let again = store.insert_pending(&new_asset("aaa", 1_700_000_000)).unwrap();
+        let again = store
+            .insert_pending(&new_asset("aaa", 1_700_000_000))
+            .unwrap();
         assert!(again.duplicated);
         assert_eq!(first.asset_id, again.asset_id);
         assert_eq!(store.count().unwrap(), 1);
@@ -401,8 +436,21 @@ mod tests {
     #[test]
     fn mark_ready_updates_metadata_and_year() {
         let store = Store::open_memory().unwrap();
-        let id = store.insert_pending(&new_asset("bbb", 1_700_000_000)).unwrap().asset_id;
-        store.mark_ready(id, 1920, 1080, 1_700_000_000, "image/jpeg", None, "ab/bbb.webp").unwrap();
+        let id = store
+            .insert_pending(&new_asset("bbb", 1_700_000_000))
+            .unwrap()
+            .asset_id;
+        store
+            .mark_ready(
+                id,
+                1920,
+                1080,
+                1_700_000_000,
+                "image/jpeg",
+                None,
+                "ab/bbb.webp",
+            )
+            .unwrap();
         let row = store.get_asset(id).unwrap().unwrap();
         assert_eq!(row.status, AssetStatus::Ready);
         assert_eq!(row.width, Some(1920));
@@ -416,32 +464,47 @@ mod tests {
         let store = Store::open_memory().unwrap();
         for i in 0..10 {
             let t = 1_700_000_000 + i * 60;
-            let id = store.insert_pending(&new_asset(&format!("sha{i:02}"), t)).unwrap().asset_id;
-            store.mark_ready(id, 10, 10, t, "image/jpeg", None, "k").unwrap();
+            let id = store
+                .insert_pending(&new_asset(&format!("sha{i:02}"), t))
+                .unwrap()
+                .asset_id;
+            store
+                .mark_ready(id, 10, 10, t, "image/jpeg", None, "k")
+                .unwrap();
         }
         let page1 = store.list_page(None, 4).unwrap();
         assert_eq!(page1.len(), 4);
         assert!(page1.windows(2).all(|w| w[0].taken_at >= w[1].taken_at));
         let last = page1.last().unwrap();
-        let page2 = store.list_page(Some((last.taken_at, last.asset_id)), 4).unwrap();
+        let page2 = store
+            .list_page(Some((last.taken_at, last.asset_id)), 4)
+            .unwrap();
         // 无重复无遗漏
-        assert!(!page2.iter().any(|r| page1.iter().any(|p| p.asset_id == r.asset_id)));
-        let page3 = store.list_page(
-            Some((
-                page2.last().unwrap().taken_at,
-                page2.last().unwrap().asset_id,
-            )),
-            4,
-        )
-        .unwrap();
+        assert!(!page2
+            .iter()
+            .any(|r| page1.iter().any(|p| p.asset_id == r.asset_id)));
+        let page3 = store
+            .list_page(
+                Some((
+                    page2.last().unwrap().taken_at,
+                    page2.last().unwrap().asset_id,
+                )),
+                4,
+            )
+            .unwrap();
         assert_eq!(page3.len(), 2);
     }
 
     #[test]
     fn delete_reports_missing_and_collects_thumb_keys() {
         let store = Store::open_memory().unwrap();
-        let a = store.insert_pending(&new_asset("c1", 1_700_000_000)).unwrap().asset_id;
-        store.mark_ready(a, 1, 1, 1_700_000_000, "image/jpeg", None, "c1/c1.webp").unwrap();
+        let a = store
+            .insert_pending(&new_asset("c1", 1_700_000_000))
+            .unwrap()
+            .asset_id;
+        store
+            .mark_ready(a, 1, 1, 1_700_000_000, "image/jpeg", None, "c1/c1.webp")
+            .unwrap();
         let (deleted, missing, keys) = store.delete_assets(&[a, 999]).unwrap();
         assert_eq!((deleted, missing), (1, 1));
         assert_eq!(keys, vec!["c1/c1.webp".to_string()]);
@@ -452,20 +515,28 @@ mod tests {
     fn exists_ready_distinguishes_status() {
         let store = Store::open_memory().unwrap();
         let sha = "status-sha";
-        let id = store.insert_pending(&new_asset(sha, 1_700_000_000)).unwrap().asset_id;
+        let id = store
+            .insert_pending(&new_asset(sha, 1_700_000_000))
+            .unwrap()
+            .asset_id;
         assert!(!store.exists_ready(sha).unwrap());
         store.mark_failed(id, "decode_failed").unwrap();
         assert!(!store.exists_ready(sha).unwrap(), "failed 行允许重试");
         store.reset_failed().unwrap();
         assert!(!store.exists_ready(sha).unwrap(), "pending 行允许重试");
-        store.mark_ready(id, 1, 1, 1_700_000_000, "image/jpeg", None, "k").unwrap();
+        store
+            .mark_ready(id, 1, 1, 1_700_000_000, "image/jpeg", None, "k")
+            .unwrap();
         assert!(store.exists_ready(sha).unwrap());
     }
 
     #[test]
     fn failed_lifecycle_roundtrip() {
         let store = Store::open_memory().unwrap();
-        let id = store.insert_pending(&new_asset("ddd", 1_700_000_000)).unwrap().asset_id;
+        let id = store
+            .insert_pending(&new_asset("ddd", 1_700_000_000))
+            .unwrap()
+            .asset_id;
         store.mark_failed(id, "decode_failed").unwrap();
         let failed = store.list_failed().unwrap();
         assert_eq!(failed.len(), 1);

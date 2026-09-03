@@ -14,8 +14,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-specta = { workspace = true }
@@ -26,6 +27,8 @@ serde_json = { workspace = true }
 tracing = "0.1"
 mm-core = { path = "../../../crates/core" }
 mm-platform = { path = "../../../crates/platform" }
+mm-store = { path = "../../../crates/store" }
+mm-pipeline = { path = "../../../crates/pipeline" }
 
 [features]
 default = ["custom-protocol"]

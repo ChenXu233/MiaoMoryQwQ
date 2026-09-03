@@ -28,14 +28,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
-
-      # clippy/test 会编译 tauri 的 Linux 侧依赖（glib/gtk/webkit2gtk）
-      - name: 安装 Linux 系统依赖
-        if: runner.os == 'Linux'
+      - name: 安装 Linux 系统依赖（tauri + libheif）
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libheif-dev
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
@@ -82,11 +80,36 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: 安装 Linux 系统依赖
+      - name: 安装 Linux 系统依赖（tauri + libheif）
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libheif-dev
+
+      - name: 安装 libheif（macOS）
+        if: runner.os == 'macOS'
+        run: |
+          brew install libheif
+          echo "PKG_CONFIG_PATH=$(brew --prefix libheif)/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: 安装 libheif（Windows，vcpkg + 二进制缓存）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "C:\vcpkg-binary-cache" | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=C:\vcpkg-binary-cache" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "libheif:x64-windows"
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VCPKGRS_TRIPLET=x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VCPKGRS_DYNAMIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: 缓存 vcpkg 产物
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg-binary-cache
+          key: vcpkg-libheif-x64-windows-1.23
 
       - uses: Swatinem/rust-cache@v2
 

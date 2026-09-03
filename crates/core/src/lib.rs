@@ -159,12 +159,21 @@ mod tests {
     #[test]
     fn event_sink_collects_events_in_order() {
         let sink = CollectingSink(Mutex::new(vec![]));
-        sink.emit(PipelineEvent::Progress { total: 10, done: 1, failed: 0 }).unwrap();
-        sink.emit(PipelineEvent::ItemFailed { path: "x".into(), code: ErrorCode::DecodeFailed })
-            .unwrap();
+        sink.emit(PipelineEvent::Progress {
+            total: 10,
+            done: 1,
+            failed: 0,
+        })
+        .unwrap();
+        sink.emit(PipelineEvent::ItemFailed {
+            path: "x".into(),
+            code: ErrorCode::DecodeFailed,
+        })
+        .unwrap();
         sink.emit(PipelineEvent::Paused).unwrap();
         sink.emit(PipelineEvent::Resumed).unwrap();
-        sink.emit(PipelineEvent::Finished { failed_count: 0 }).unwrap();
+        sink.emit(PipelineEvent::Finished { failed_count: 0 })
+            .unwrap();
         assert_eq!(sink.0.lock().unwrap().len(), 5);
         assert!(matches!(sink.0.lock().unwrap()[2], PipelineEvent::Paused));
     }
