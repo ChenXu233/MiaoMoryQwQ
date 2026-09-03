@@ -1,0 +1,13 @@
+[package]
+name = "mm-core"
+description = "MiaoMory 领域类型与端口 trait：零 IO、零 async（ADR-0005）"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

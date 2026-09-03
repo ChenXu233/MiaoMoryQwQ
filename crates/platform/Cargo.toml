@@ -1,0 +1,15 @@
+[package]
+name = "mm-platform"
+description = "MiaoMory 平台层：路径 / 配置 / 日志（白皮书 §4.1）"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+dirs = "6"
+toml = "0.9"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
