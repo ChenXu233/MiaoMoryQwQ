@@ -64,11 +64,7 @@ fn decode_raster(path: &Path, mime: &'static str) -> Result<DecodedPhoto, ErrorC
     let (width, height) = (rgb.width(), rgb.height());
 
     Ok(DecodedPhoto {
-        image: DecodedImage {
-            width,
-            height,
-            rgb: rgb.into_raw(),
-        },
+        image: DecodedImage { width, height, rgb: rgb.into_raw() },
         mime,
         taken_at,
         exif_json: exif_meta,
@@ -82,9 +78,7 @@ fn decode_heif(path: &Path) -> Result<DecodedPhoto, ErrorCode> {
     let lh = LibHeif::new();
     // libheif 解码时自动应用旋转/裁剪等几何变换（含 iPhone 方向）
     let ctx = HeifContext::read_from_bytes(&bytes).map_err(|_| ErrorCode::DecodeFailed)?;
-    let handle = ctx
-        .primary_image_handle()
-        .map_err(|_| ErrorCode::DecodeFailed)?;
+    let handle = ctx.primary_image_handle().map_err(|_| ErrorCode::DecodeFailed)?;
 
     // HEIC 内嵌 EXIF（TIFF 块，去掉 "Exif\0\0" 前缀后可解析）
     let mut ids = [0u32; 1];
@@ -127,7 +121,9 @@ fn decode_heif(path: &Path) -> Result<DecodedPhoto, ErrorCode> {
 }
 
 /// 解析 EXIF：返回（最小 JSON、拍摄时间 UTC 秒）
-fn read_exif<R: std::io::BufRead + std::io::Seek>(reader: &mut R) -> (Option<String>, Option<i64>) {
+fn read_exif<R: std::io::BufRead + std::io::Seek>(
+    reader: &mut R,
+) -> (Option<String>, Option<i64>) {
     let exif = match exif::Reader::new().read_from_container(reader) {
         Ok(e) => e,
         Err(_) => return (None, None),
@@ -158,11 +154,8 @@ fn read_exif<R: std::io::BufRead + std::io::Seek>(reader: &mut R) -> (Option<Str
     if let Some(o) = orientation {
         json.insert("orientation".into(), serde_json::json!(o));
     }
-    let meta = if json.is_empty() {
-        None
-    } else {
-        Some(serde_json::Value::Object(json).to_string())
-    };
+    let meta =
+        if json.is_empty() { None } else { Some(serde_json::Value::Object(json).to_string()) };
     (meta, taken_at)
 }
 
@@ -177,11 +170,8 @@ fn strip_exif_prefix(block: &[u8]) -> &[u8] {
 
 /// EXIF DateTime（无时区，按 UTC 解释）→ Unix 秒；days_from_civil（Hinnant）
 fn utc_seconds(dt: &exif::DateTime) -> i64 {
-    let (y, m) = if dt.month <= 2 {
-        (i64::from(dt.year) - 1, i64::from(dt.month) + 12)
-    } else {
-        (i64::from(dt.year), i64::from(dt.month))
-    };
+    let (y, m) =
+        if dt.month <= 2 { (i64::from(dt.year) - 1, i64::from(dt.month) + 12) } else { (i64::from(dt.year), i64::from(dt.month)) };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
     let mp = (m + 9) % 12;

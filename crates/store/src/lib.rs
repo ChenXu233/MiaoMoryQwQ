@@ -21,6 +21,15 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+impl From<StoreError> for ErrorCode {
+    fn from(e: StoreError) -> Self {
+        match e {
+            StoreError::Core(code) => code,
+            _ => ErrorCode::StoreFailed,
+        }
+    }
+}
+
 /// schema 迁移：每版 +1（`PRAGMA user_version`），历史追加不修改
 pub const MIGRATIONS: &[&str] = &[
     // v1：assets 表（白皮书 §4.5；vec_assets 随 v2、fts_text 随 v3）
@@ -198,10 +207,15 @@ impl Store {
         Ok(())
     }
 
-    pub fn exists_sha(&self, sha256: &str) -> Result<bool> {
+    /// 是否已有**就绪**资产（重试语义：pending/failed 行不算，允许重新处理）
+    pub fn exists_ready(&self, sha256: &str) -> Result<bool> {
         Ok(self
             .conn
-            .query_row("SELECT 1 FROM assets WHERE sha256 = ?1", params![sha256], |_| Ok(()))
+            .query_row(
+                "SELECT 1 FROM assets WHERE sha256 = ?1 AND status = 'ready'",
+                params![sha256],
+                |_| Ok(()),
+            )
             .optional()?
             .is_some())
     }
@@ -432,6 +446,20 @@ mod tests {
         assert_eq!((deleted, missing), (1, 1));
         assert_eq!(keys, vec!["c1/c1.webp".to_string()]);
         assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn exists_ready_distinguishes_status() {
+        let store = Store::open_memory().unwrap();
+        let sha = "status-sha";
+        let id = store.insert_pending(&new_asset(sha, 1_700_000_000)).unwrap().asset_id;
+        assert!(!store.exists_ready(sha).unwrap());
+        store.mark_failed(id, "decode_failed").unwrap();
+        assert!(!store.exists_ready(sha).unwrap(), "failed 行允许重试");
+        store.reset_failed().unwrap();
+        assert!(!store.exists_ready(sha).unwrap(), "pending 行允许重试");
+        store.mark_ready(id, 1, 1, 1_700_000_000, "image/jpeg", None, "k").unwrap();
+        assert!(store.exists_ready(sha).unwrap());
     }
 
     #[test]
