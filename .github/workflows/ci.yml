@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 常驻内容（ADR-0010）：格式 / lint / clippy / tsc / 单元测试 / 契约一致性 / 三平台构建矩阵
+# 不含 e2e 与任何性能 bench（ADR-0004/0010）
+
+jobs:
+  quality:
+    name: 质量门（fmt/clippy/test/tsc/契约一致）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 前端类型检查（vue-tsc）
+        run: pnpm --filter miaomory-app typecheck
+
+      # generate_context! 编译期要求 frontendDist 存在
+      - name: 前端构建（vite build）
+        run: pnpm --filter miaomory-app exec vite build
+
+      - name: Rust 格式检查
+        run: cargo fmt --all --check
+
+      - name: Clippy（警告即错误）
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: 单元测试
+        run: cargo test --workspace
+
+      - name: 契约生成一致性（铁律 6）
+        run: |
+          cargo run -p miaomory-app --bin export_contracts
+          git diff --exit-code -- packages/contracts
+
+  build:
+    name: 三平台构建（${{ matrix.os }}，不签名）
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 Linux 系统依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建应用
+        run: pnpm --filter miaomory-app tauri build
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: miaomory-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            target/release/bundle/nsis/*
+            target/release/bundle/msi/*
+            target/release/bundle/dmg/*
+            target/release/bundle/macos/*
+            target/release/bundle/deb/*
+            target/release/bundle/rpm/*
+            target/release/bundle/appimage/*
