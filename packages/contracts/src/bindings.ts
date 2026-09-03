@@ -23,15 +23,25 @@ export const commands = {
 	deleteAssets: (assetIds: number[]) => typedError<DeleteReport, string>(__TAURI_INVOKE("delete_assets", { assetIds })),
 	/**  失败清单 */
 	listFailedItems: () => typedError<FailedItem[], string>(__TAURI_INVOKE("list_failed_items")),
+	modelStatus: () => __TAURI_INVOKE<ModelStatus>("model_status"),
+	/**  下载模型资产（后台线程；进度经事件上报，完成后加载并广播就绪） */
+	downloadModels: () => typedError<null, string>(__TAURI_INVOKE("download_models")),
+	/**  中文语义搜索（规格 0003）：文本编码 → KNN → join assets */
+	searchAssets: (query: string, topK: number | null) => typedError<SearchPage, string>(__TAURI_INVOKE("search_assets", { query, topK })),
+	/**  重建全部向量索引（模型变更/量化策略变更时）；worker 轮询发现空队列后全量重嵌 */
+	reindexAll: () => typedError<number, string>(__TAURI_INVOKE("reindex_all")),
 };
 
 /** Events */
 export const events = {
+	embedProgressEvent: makeEvent<EmbedProgressEvent>("embed-progress-event"),
 	importFinishedEvent: makeEvent<ImportFinishedEvent>("import-finished-event"),
 	importItemFailedEvent: makeEvent<ImportItemFailedEvent>("import-item-failed-event"),
 	importPausedEvent: makeEvent<ImportPausedEvent>("import-paused-event"),
 	importProgressEvent: makeEvent<ImportProgressEvent>("import-progress-event"),
 	importResumedEvent: makeEvent<ImportResumedEvent>("import-resumed-event"),
+	modelDownloadProgressEvent: makeEvent<ModelDownloadProgressEvent>("model-download-progress-event"),
+	modelReadyEvent: makeEvent<ModelReadyEvent>("model-ready-event"),
 };
 
 /* Types */
@@ -47,6 +57,11 @@ export type AssetSummary = {
 export type DeleteReport = {
 	deleted: number,
 	missing: number,
+};
+
+export type EmbedProgressEvent = {
+	done: number,
+	total: number,
 };
 
 export type FailedItem = {
@@ -80,6 +95,32 @@ export type ImportProgressEvent = {
 
 export type ImportResumedEvent = {
 	job_id: number,
+};
+
+export type ModelDownloadProgressEvent = {
+	file: string,
+	received: number,
+	total: number,
+};
+
+export type ModelReadyEvent = Record<string, never>;
+
+export type ModelStatus = {
+	ready: boolean,
+	loaded: boolean,
+	files_missing: string[],
+};
+
+export type SearchHit = {
+	summary: AssetSummary,
+	/**  归一相似度（1 - L2²/4），越大越相关 */
+	score: number | null,
+};
+
+export type SearchPage = {
+	items: SearchHit[],
+	model_ready: boolean,
+	pending_indexing: number,
 };
 
 export type TimelinePage = {

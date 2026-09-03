@@ -33,3 +33,19 @@ pub struct ImportItemFailedEvent {
     pub path: String,
     pub error_code: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct ModelDownloadProgressEvent {
+    pub file: String,
+    pub received: i32,
+    pub total: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct ModelReadyEvent {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct EmbedProgressEvent {
+    pub done: i32,
+    pub total: i32,
+}

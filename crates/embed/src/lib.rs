@@ -13,7 +13,7 @@ pub mod tokenizer;
 use std::path::Path;
 use std::sync::Mutex;
 
-use mm_core::{DecodedImage, ErrorCode, Embedder};
+use mm_core::{DecodedImage, Embedder, ErrorCode};
 use ort::ep;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Tensor;
@@ -60,8 +60,7 @@ impl ClipEmbedder {
             .first()
             .map(|o| o.name().to_string())
             .ok_or(ErrorCode::ModelMissing)?;
-        let text_input_names: Vec<String> =
-            visual_then_text_inputs(&text);
+        let text_input_names: Vec<String> = visual_then_text_inputs(&text);
         let text_output_name = text
             .outputs()
             .first()
@@ -104,14 +103,14 @@ impl ClipEmbedder {
                 self.text_input_names[1].as_str() => Tensor::from_array(([1i64, ctx as i64], mask)).map_err(|_| ErrorCode::SearchUnavailable)?,
                 self.text_input_names[2].as_str() => Tensor::from_array(([1i64, ctx as i64], types)).map_err(|_| ErrorCode::SearchUnavailable)?,
             };
-            run_and_take_f32(&mut *session, inputs, &self.text_output_name)?
+            run_and_take_f32(&mut session, inputs, &self.text_output_name)?
         } else {
             let inputs = ort::inputs! {
                 self.text_input_names[0].as_str() => Tensor::from_array(([1i64, ctx as i64], enc.input_ids.clone())).map_err(|_| ErrorCode::SearchUnavailable)?,
                 self.text_input_names[1].as_str() => Tensor::from_array(([1i64, ctx as i64], enc.attention_mask.clone())).map_err(|_| ErrorCode::SearchUnavailable)?,
                 self.text_input_names[2].as_str() => Tensor::from_array(([1i64, ctx as i64], enc.token_type_ids.clone())).map_err(|_| ErrorCode::SearchUnavailable)?,
             };
-            run_and_take_f32(&mut *session, inputs, &self.text_output_name)?
+            run_and_take_f32(&mut session, inputs, &self.text_output_name)?
         };
 
         let mut v = output;
@@ -130,10 +129,11 @@ impl ClipEmbedder {
                 }
                 let n = chunk.len() as i64;
                 let mut session = self.visual.lock().unwrap();
-                let tensor =
-                    Tensor::from_array(([n, 3i64, 224, 224], flat)).map_err(|_| ErrorCode::DecodeFailed)?;
+                let tensor = Tensor::from_array(([n, 3i64, 224, 224], flat))
+                    .map_err(|_| ErrorCode::DecodeFailed)?;
                 let inputs = ort::inputs! { self.visual_input_name.as_str() => tensor };
-                let mut outputs_all = run_and_take_f32(&mut *session, inputs, &self.visual_output_name)?;
+                let mut outputs_all =
+                    run_and_take_f32(&mut session, inputs, &self.visual_output_name)?;
                 // 一次 run 返回 [N, dim]；拆开
                 for v in outputs_all.chunks_mut(self.embedding_dim) {
                     quantize::normalize(v)?;
@@ -147,7 +147,7 @@ impl ClipEmbedder {
                 let tensor = Tensor::from_array(([1i64, 3i64, w as i64, h as i64], chw))
                     .map_err(|_| ErrorCode::DecodeFailed)?;
                 let inputs = ort::inputs! { self.visual_input_name.as_str() => tensor };
-                let mut v = run_and_take_f32(&mut *session, inputs, &self.visual_output_name)?;
+                let mut v = run_and_take_f32(&mut session, inputs, &self.visual_output_name)?;
                 quantize::normalize(&mut v)?;
                 out.push(v);
             }
@@ -157,7 +157,11 @@ impl ClipEmbedder {
 }
 
 fn visual_then_text_inputs(session: &Session) -> Vec<String> {
-    session.inputs().iter().map(|i| i.name().to_string()).collect()
+    session
+        .inputs()
+        .iter()
+        .map(|i| i.name().to_string())
+        .collect()
 }
 
 fn run_and_take_f32<'i, 'v, I>(
@@ -169,7 +173,9 @@ where
     I: Into<ort::session::SessionInputs<'i, 'v>>,
     'v: 'i,
 {
-    let outputs = session.run(inputs).map_err(|_| ErrorCode::SearchUnavailable)?;
+    let outputs = session
+        .run(inputs)
+        .map_err(|_| ErrorCode::SearchUnavailable)?;
     let (shape, data) = outputs[output_name]
         .try_extract_tensor::<f32>()
         .map_err(|_| ErrorCode::SearchUnavailable)?;
@@ -178,7 +184,7 @@ where
 }
 
 fn load_session(bytes: &[u8]) -> Result<Session, ErrorCode> {
-    let mut builder = Session::builder()
+    let builder = Session::builder()
         .map_err(|_| ErrorCode::ModelMissing)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|_| ErrorCode::ModelMissing)?;
@@ -190,7 +196,9 @@ fn load_session(bytes: &[u8]) -> Result<Session, ErrorCode> {
     let mut builder = builder
         .with_execution_providers([ep::CoreML::default().build(), ep::CPU::default().build()])
         .map_err(|_| ErrorCode::ModelMissing)?;
-    builder.commit_from_memory(bytes).map_err(|_| ErrorCode::ModelMissing)
+    builder
+        .commit_from_memory(bytes)
+        .map_err(|_| ErrorCode::ModelMissing)
 }
 
 impl Embedder for ClipEmbedder {

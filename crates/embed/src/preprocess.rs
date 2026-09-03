@@ -6,7 +6,7 @@ use mm_core::{DecodedImage, ErrorCode};
 
 pub const IMAGE_SIZE: u32 = 224;
 pub const MEAN: [f32; 3] = [0.481_454_66, 0.457_827_5, 0.408_210_73];
-pub const STD: [f32; 3] = [0.268_629_54, 0.261_302_58, 0.275_777_11];
+pub const STD: [f32; 3] = [0.268_629_54, 0.261_302_6, 0.275_777_1];
 
 /// 单图 → ([3,H,W] f32, 宽, 高)（channel-major）
 pub fn to_chw(photo: &DecodedImage, center_crop: bool) -> Result<(Vec<f32>, u32, u32), ErrorCode> {
@@ -46,7 +46,12 @@ fn resize_shortest_edge(src: &RgbImage, target: u32) -> RgbImage {
         ((f64::from(w) * scale).round() as u32, target)
     };
     let _ = (long, short);
-    image::imageops::resize(src, nw.max(1), nh.max(1), image::imageops::FilterType::CatmullRom)
+    image::imageops::resize(
+        src,
+        nw.max(1),
+        nh.max(1),
+        image::imageops::FilterType::CatmullRom,
+    )
 }
 
 fn resize_and_center_crop(src: &RgbImage, target: u32) -> RgbImage {
@@ -69,7 +74,11 @@ mod tests {
                 rgb.extend_from_slice(&[(x % 256) as u8, (y % 256) as u8, 64]);
             }
         }
-        DecodedImage { width: w, height: h, rgb }
+        DecodedImage {
+            width: w,
+            height: h,
+            rgb,
+        }
     }
 
     #[test]

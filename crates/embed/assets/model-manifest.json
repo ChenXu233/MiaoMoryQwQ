@@ -5,8 +5,8 @@
   "context_length": 52,
   "visual_fixed_square": true,
   "files": [
-    { "name": "visual.onnx", "sha256": "PLACEHOLDER", "size": 0 },
-    { "name": "text.onnx", "sha256": "PLACEHOLDER", "size": 0 },
-    { "name": "vocab.txt", "sha256": "PLACEHOLDER", "size": 0 }
+    { "name": "visual.int8.onnx", "sha256": "7fbeec6e365ff53a56ba7903f372b7e31aae5e15fa38bfa140e7cfcca8f00b6f", "size": 86929522 },
+    { "name": "text.int8.onnx", "sha256": "c39ddc742933166ffd42175be54815467dd7b2778d10da58f7d6accc77f49e06", "size": 102828365 },
+    { "name": "vocab.txt", "sha256": "45bbac6b341c319adc98a532532882e91a9cefc0329aa57bac9ae761c27b291c", "size": 109540 }
   ]
 }

@@ -35,12 +35,16 @@ impl BertTokenizer {
             .map_err(|_| ErrorCode::ModelMissing)?;
         let mut tokenizer = Tokenizer::new(word_piece);
         // 裸 WordPiece 无预切分：按空白切词，逐词 WordPiece
-        tokenizer.with_pre_tokenizer(Some(tokenizers::pre_tokenizers::whitespace::Whitespace::default()));
+        tokenizer.with_pre_tokenizer(Some(tokenizers::pre_tokenizers::whitespace::Whitespace));
         // [PAD] 在 bert-base-chinese 词表中的 id 为 0
         let pad_id = tokenizer
             .token_to_id("[PAD]")
             .ok_or(ErrorCode::ModelMissing)? as i64;
-        Ok(Self { tokenizer, context_length, pad_id })
+        Ok(Self {
+            tokenizer,
+            context_length,
+            pad_id,
+        })
     }
 
     /// [CLS] text [SEP] 编码 + pad；超长截断（保留 CLS/SEP）
@@ -68,11 +72,15 @@ impl BertTokenizer {
 
         let mut input_ids = vec![self.pad_id; ctx];
         let mut attention_mask = vec![0i64; ctx];
-        let mut token_type_ids = vec![0i64; ctx];
+        let token_type_ids = vec![0i64; ctx];
         input_ids[..ids.len()].copy_from_slice(&ids);
         attention_mask[..ids.len()].fill(1);
         // token_type_ids 单句全 0（含 pad 位置，与 cn_clip 参考实现一致）
-        Ok(Encoded { input_ids, attention_mask, token_type_ids })
+        Ok(Encoded {
+            input_ids,
+            attention_mask,
+            token_type_ids,
+        })
     }
 }
 
@@ -114,9 +122,6 @@ mod tests {
     #[test]
     fn rejects_blank_input() {
         let t = tokenizer();
-        assert!(matches!(
-            t.encode("   "),
-            Err(ErrorCode::SearchUnavailable)
-        ));
+        assert!(matches!(t.encode("   "), Err(ErrorCode::SearchUnavailable)));
     }
 }

@@ -126,9 +126,10 @@ pub trait Embedder: Send + Sync {
     fn embed_text(&self, text: &str) -> Result<Vec<f32>, ErrorCode>;
 }
 
-/// 向量索引抽象：唯一实现为 sqlite-vec（ADR-0002；更新 = 删除 + 重插）
+/// 向量索引抽象：唯一实现为 sqlite-vec（ADR-0002；更新 = 删除 + 重插）。
+/// 现阶段向量以归一化 f32 存储（上游 int8 列类型尚未可用，见规格 0003 §5）。
 pub trait VectorIndex {
-    fn add(&mut self, id: AssetId, vec: &[i8]) -> Result<(), ErrorCode>;
+    fn add(&mut self, id: AssetId, vec: &[f32]) -> Result<(), ErrorCode>;
     fn remove(&mut self, id: AssetId) -> Result<(), ErrorCode>;
     fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(AssetId, f32)>, ErrorCode>;
 }

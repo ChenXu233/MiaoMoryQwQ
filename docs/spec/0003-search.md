@@ -39,7 +39,9 @@
 
 ## 5. 数据契约
 
-- schema v2：`CREATE VIRTUAL TABLE vec_assets USING vec0(asset_id INTEGER PRIMARY KEY, year TEXT PARTITION KEY, embedding INT8[512]);`
+- schema v2：`CREATE VIRTUAL TABLE vec_assets USING vec0(asset_id INTEGER PRIMARY KEY, embedding float32[512]);`
+  - **偏差记录**：① sqlite-vec 当前版本不识别 `int8` 列类型且忽略 `PARTITION KEY` 约束（静默不过滤），故存归一化 f32、不做分区；MVP ≤5 万向量全表 KNN 足够，二者随上游稳定后引入（届时重建 vec 表）。`mm-embed::quantize` 模块与单测保留。
+  - **偏差记录**：sqlite-vec 当前版本（0.1.10-alpha）不识别 `int8` 列类型，INT8 量化推迟到上游支持；现阶段存归一化 f32（2KB/向量，5 万张 ≈100MB，可接受）。`mm-embed::quantize` 模块与单测保留，届时切换。
 - 命令：`search_assets(query: String, top_k: Option<u32>) -> SearchPage { items: Vec<SearchHit>, model_ready: bool, pending_indexing: u64 }`；`SearchHit { summary: AssetSummary, score: f64 }`
 - 命令：`reindex_all() -> u64`（返回受影响资产数）；`model_status() -> ModelStatus { ready, files_missing: Vec<String> }`
 - 量化：归一化 f32 → INT8（×127 取整）；查询向量同样量化后走 `embedding MATCH` KNN

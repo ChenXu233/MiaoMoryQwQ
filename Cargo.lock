@@ -2614,6 +2614,7 @@ name = "miaomory-app"
 version = "0.1.0"
 dependencies = [
  "mm-core",
+ "mm-embed",
  "mm-pipeline",
  "mm-platform",
  "mm-store",

@@ -29,6 +29,7 @@ mm-core = { path = "../../../crates/core" }
 mm-platform = { path = "../../../crates/platform" }
 mm-store = { path = "../../../crates/store" }
 mm-pipeline = { path = "../../../crates/pipeline" }
+mm-embed = { path = "../../../crates/embed" }
 
 [features]
 default = ["custom-protocol"]

@@ -45,14 +45,14 @@ mod tests {
     fn quantize_dequantize_preserves_direction() {
         // 随机但确定的向量
         let mut v: Vec<f32> = (0..512)
-            .map(|i| ((i as f32 * 0.37).sin() * 3.1 + (i as f32 * 0.11).cos()))
+            .map(|i| (i as f32 * 0.37).sin() * 3.1 + (i as f32 * 0.11).cos())
             .collect();
         normalize(&mut v).unwrap();
         let q = quantize(&v);
         let back = dequantize(&q);
         assert!(cosine(&v, &back) >= 0.99, "量化前后余弦相似度应 ≥0.99");
         assert_eq!(q.len(), 512);
-        assert!(q.iter().all(|&x| x.abs() <= 127));
+        assert!(q.iter().all(|&x| (-127..=127).contains(&x)));
     }
 
     #[test]

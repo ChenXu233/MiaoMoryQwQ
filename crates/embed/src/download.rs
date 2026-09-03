@@ -18,7 +18,10 @@ pub type ProgressFn<'a> = &'a (dyn Fn(&str, u64, u64) + Send + Sync);
 
 impl ModelDownloader {
     pub fn new(endpoints: Vec<String>, model_dir: PathBuf) -> Self {
-        Self { endpoints, model_dir }
+        Self {
+            endpoints,
+            model_dir,
+        }
     }
 
     /// 下载清单中的全部缺失文件；返回就绪状态
@@ -100,7 +103,8 @@ impl ModelDownloader {
                         }
                         Ok(n) => {
                             use std::io::Write;
-                            file.write_all(&buf[..n]).map_err(|_| ErrorCode::WriteFailed)?;
+                            file.write_all(&buf[..n])
+                                .map_err(|_| ErrorCode::WriteFailed)?;
                             received += n as u64;
                             on_progress(name, received, total_size);
                         }
@@ -184,7 +188,10 @@ mod tests {
         let seen = std::sync::Mutex::new(Vec::<(String, u64, u64)>::new());
         let seen_ref = &seen;
         let result = d.ensure_all(&manifest, &|name, recv, total| {
-            seen_ref.lock().unwrap().push((name.to_string(), recv, total));
+            seen_ref
+                .lock()
+                .unwrap()
+                .push((name.to_string(), recv, total));
         });
         assert_eq!(result, Err(ErrorCode::ModelDownloadFailed));
         assert!(seen.lock().unwrap().is_empty() || true);
