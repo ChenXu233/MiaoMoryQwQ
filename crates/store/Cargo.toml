@@ -1,0 +1,17 @@
+[package]
+name = "mm-store"
+description = "MiaoMory 存储层：SQLite + 迁移 + 查询（sqlite-vec 静态内嵌）"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+sqlite-vec = "0.1"
+mm-core = { path = "../core" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# 测试用临时目录
+tempfile = "3"
