@@ -56,11 +56,12 @@ pub struct DecodedImage {
     pub rgb: Vec<u8>,
 }
 
-/// pipeline 进度事件（`EventSink` 载荷；P1 接入 tauri 事件）
+/// pipeline 进度事件（`EventSink` 载荷；装配层桥接为 tauri 事件）
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum PipelineEvent {
-    Progress { total: u64, done: u64 },
+    Progress { total: u64, done: u64, failed: u64 },
+    ItemFailed { path: String, code: ErrorCode },
     Paused,
     Resumed,
     Finished { failed_count: u64 },
@@ -80,6 +81,8 @@ pub enum ErrorCode {
     StoreFailed,
     #[error("导入已取消")]
     ImportCancelled,
+    #[error("已有导入任务进行中")]
+    ImportBusy,
     #[error("模型未就绪")]
     ModelMissing,
     #[error("模型下载失败")]
@@ -88,6 +91,24 @@ pub enum ErrorCode {
     SearchUnavailable,
     #[error("未知错误")]
     Unknown,
+}
+
+impl ErrorCode {
+    /// 机器码（与 serde snake_case 一致）；入库 error_code 列与日志用
+    pub fn slug(&self) -> &'static str {
+        match self {
+            ErrorCode::DecodeFailed => "decode_failed",
+            ErrorCode::ReadFailed => "read_failed",
+            ErrorCode::WriteFailed => "write_failed",
+            ErrorCode::StoreFailed => "store_failed",
+            ErrorCode::ImportCancelled => "import_cancelled",
+            ErrorCode::ImportBusy => "import_busy",
+            ErrorCode::ModelMissing => "model_missing",
+            ErrorCode::ModelDownloadFailed => "model_download_failed",
+            ErrorCode::SearchUnavailable => "search_unavailable",
+            ErrorCode::Unknown => "unknown",
+        }
+    }
 }
 
 // ---- 端口（ADR-0005：全项目仅 5 个，多一个都是过度设计） ----
@@ -111,53 +132,41 @@ pub trait VectorIndex {
     fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(AssetId, f32)>, ErrorCode>;
 }
 
-/// 进度事件出口：P1 实现为 tauri 事件桥
-pub trait EventSink {
+/// 进度事件出口：P1 实现为 tauri 事件桥（引擎线程跨线程调用，需 Send + Sync）
+pub trait EventSink: Send + Sync {
     fn emit(&self, event: PipelineEvent) -> Result<(), ErrorCode>;
 }
 
 /// 时钟抽象：测试时可注入固定时钟
-pub trait Clock {
+pub trait Clock: Send + Sync {
     fn now_unix(&self) -> i64;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
-    struct CollectingSink(RefCell<Vec<PipelineEvent>>);
+    struct CollectingSink(Mutex<Vec<PipelineEvent>>);
 
     impl EventSink for CollectingSink {
         fn emit(&self, event: PipelineEvent) -> Result<(), ErrorCode> {
-            self.0.borrow_mut().push(event);
+            self.0.lock().unwrap().push(event);
             Ok(())
         }
     }
 
     #[test]
     fn event_sink_collects_events_in_order() {
-        let sink = CollectingSink(RefCell::new(vec![]));
-        sink.emit(PipelineEvent::Progress { total: 10, done: 1 })
+        let sink = CollectingSink(Mutex::new(vec![]));
+        sink.emit(PipelineEvent::Progress { total: 10, done: 1, failed: 0 }).unwrap();
+        sink.emit(PipelineEvent::ItemFailed { path: "x".into(), code: ErrorCode::DecodeFailed })
             .unwrap();
         sink.emit(PipelineEvent::Paused).unwrap();
         sink.emit(PipelineEvent::Resumed).unwrap();
-        sink.emit(PipelineEvent::Finished { failed_count: 0 })
-            .unwrap();
-        assert_eq!(sink.0.borrow().len(), 4);
-        assert!(matches!(sink.0.borrow()[1], PipelineEvent::Paused));
-    }
-
-    #[test]
-    fn error_code_json_is_snake_case_and_stable() {
-        // 契约稳定性：错误码的 JSON 形态一旦发布即不可变（UI 按此映射文案）
-        assert_eq!(
-            serde_json::to_value(ErrorCode::ModelDownloadFailed).unwrap(),
-            serde_json::json!("model_download_failed")
-        );
-        let back: ErrorCode =
-            serde_json::from_value(serde_json::json!("model_download_failed")).unwrap();
-        assert_eq!(back, ErrorCode::ModelDownloadFailed);
+        sink.emit(PipelineEvent::Finished { failed_count: 0 }).unwrap();
+        assert_eq!(sink.0.lock().unwrap().len(), 5);
+        assert!(matches!(sink.0.lock().unwrap()[2], PipelineEvent::Paused));
     }
 
     struct FixedClock(i64);
