@@ -31,7 +31,10 @@ pub struct ImportConfig {
 
 impl Default for ImportConfig {
     fn default() -> Self {
-        Self { chunk_size: 32, pause_after_done: 0 }
+        Self {
+            chunk_size: 32,
+            pause_after_done: 0,
+        }
     }
 }
 
@@ -183,7 +186,9 @@ impl ImportEngine {
             job.finished = true;
             job.failed = failed;
         }
-        let _ = self.sink.emit(PipelineEvent::Finished { failed_count: failed });
+        let _ = self.sink.emit(PipelineEvent::Finished {
+            failed_count: failed,
+        });
     }
 
     fn run(self: Arc<Self>, files: Vec<PathBuf>, job_id: u64) {
@@ -216,7 +221,9 @@ impl ImportEngine {
                             job.paused = false;
                         }
                     }
-                    let _ = self.sink.emit(PipelineEvent::Finished { failed_count: failed });
+                    let _ = self.sink.emit(PipelineEvent::Finished {
+                        failed_count: failed,
+                    });
                     return;
                 }
                 if !paused {
@@ -257,17 +264,14 @@ impl ImportEngine {
 
                     let photo = match decode_photo(path) {
                         Ok(p) => p,
-                        Err(code) => {
-                            return Outcome::Failed(path.clone(), Some(sha256), code)
-                        }
+                        Err(code) => return Outcome::Failed(path.clone(), Some(sha256), code),
                     };
-                    let taken_at =
-                        photo.taken_at.unwrap_or_else(|| mtime_secs(path).unwrap_or(0));
+                    let taken_at = photo
+                        .taken_at
+                        .unwrap_or_else(|| mtime_secs(path).unwrap_or(0));
                     let (thumb, _, _) = match make_thumbnail(&photo.image) {
                         Ok(t) => t,
-                        Err(code) => {
-                            return Outcome::Failed(path.clone(), Some(sha256), code)
-                        }
+                        Err(code) => return Outcome::Failed(path.clone(), Some(sha256), code),
                     };
                     Outcome::Persist(Prepared {
                         path: path.clone(),
@@ -290,7 +294,13 @@ impl ImportEngine {
                     Outcome::Failed(path, sha256, code) => {
                         job.done += 1;
                         job.failed += 1;
-                        mark_item_failed(&store, &path, sha256.as_deref(), code, self.clock.now_unix());
+                        mark_item_failed(
+                            &store,
+                            &path,
+                            sha256.as_deref(),
+                            code,
+                            self.clock.now_unix(),
+                        );
                         let _ = self.sink.emit(PipelineEvent::ItemFailed {
                             path: path.to_string_lossy().into_owned(),
                             code,
@@ -378,12 +388,20 @@ impl ImportEngine {
             job.failed
         };
         let _ = job_id;
-        let _ = self.sink.emit(PipelineEvent::Finished { failed_count: failed });
+        let _ = self.sink.emit(PipelineEvent::Finished {
+            failed_count: failed,
+        });
     }
 }
 
 fn mtime_secs(path: &Path) -> Option<i64> {
-    std::fs::metadata(path).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() as i64)
 }
 
 /// 坏文件入库为 failed 行（失败列表可展示/重试）；哈希不可得时用路径派生占位哈希
@@ -413,7 +431,10 @@ fn mark_item_failed(
 /// 递归扫描：跳过隐藏项与不支持扩展名；按路径排序保证确定性
 pub fn scan_folder(folder: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    for entry in walkdir::WalkDir::new(folder).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(folder)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -485,7 +506,11 @@ mod tests {
             .unwrap();
     }
 
-    fn engine_in(dir_ws: &Path, sink: Arc<dyn EventSink>, config: ImportConfig) -> Arc<ImportEngine> {
+    fn engine_in(
+        dir_ws: &Path,
+        sink: Arc<dyn EventSink>,
+        config: ImportConfig,
+    ) -> Arc<ImportEngine> {
         Arc::new(ImportEngine::new(
             dir_ws.join("index.db"),
             dir_ws.join("thumbs"),
@@ -546,7 +571,11 @@ mod tests {
         std::fs::write(src.join("broken.jpg"), b"definitely not a jpeg").unwrap();
 
         let events = Arc::new(Mutex::new(Vec::new()));
-        let engine = engine_in(&ws, Arc::new(FakeSink(Arc::clone(&events))), ImportConfig::default());
+        let engine = engine_in(
+            &ws,
+            Arc::new(FakeSink(Arc::clone(&events))),
+            ImportConfig::default(),
+        );
         engine.start(src.clone()).unwrap();
         assert!(wait_finished(&engine, Duration::from_secs(15)));
 
@@ -576,14 +605,21 @@ mod tests {
         let engine = engine_in(
             &ws,
             Arc::new(FakeSink(Arc::clone(&events))),
-            ImportConfig { chunk_size: 1, pause_after_done: 1 },
+            ImportConfig {
+                chunk_size: 1,
+                pause_after_done: 1,
+            },
         );
         engine.start(src.clone()).unwrap();
 
         // 等待自动暂停（done == 1 时触发 Paused 事件）
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            let paused = events.lock().unwrap().iter().any(|e| matches!(e, PipelineEvent::Paused));
+            let paused = events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, PipelineEvent::Paused));
             if paused && engine.snapshot().paused {
                 break;
             }
@@ -609,9 +645,13 @@ mod tests {
     fn start_rejects_when_busy_and_missing_dir() {
         let (dir, src, ws) = temp_workspace("busy");
         assert_eq!(
-            engine_in(&ws, Arc::new(FakeSink(Default::default())), ImportConfig::default())
-                .start(src.parent().unwrap().join("nope"))
-                .unwrap_err(),
+            engine_in(
+                &ws,
+                Arc::new(FakeSink(Default::default())),
+                ImportConfig::default()
+            )
+            .start(src.parent().unwrap().join("nope"))
+            .unwrap_err(),
             ErrorCode::ReadFailed
         );
         drop(dir);

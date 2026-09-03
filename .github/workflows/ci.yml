@@ -28,18 +28,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: 安装 Linux 系统依赖（tauri + libde265）
+      - name: 安装 Linux 系统依赖（tauri + libheif）
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libde265-dev
-
-      - name: 源码构建 libheif 1.23（apt 版本过旧，libheif-sys 要求 >=1.23）
-        run: |
-          git clone --depth 1 --branch v1.23.2 https://github.com/strukturag/libheif.git /tmp/libheif
-          cmake -S /tmp/libheif -B /tmp/libheif/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-          cmake --build /tmp/libheif/build -j
-          sudo cmake --install /tmp/libheif/build
-          sudo ldconfig
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libheif-dev
 
       - uses: Swatinem/rust-cache@v2
 
@@ -88,24 +80,17 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: 安装 Linux 系统依赖（tauri + libde265）
+      - name: 安装 Linux 系统依赖（tauri + libheif）
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libde265-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libheif-dev
 
-      - name: 安装 macOS 依赖（libde265 + cmake）
+      - name: 安装 libheif（macOS）
         if: runner.os == 'macOS'
-        run: brew install libde265 cmake
-
-      - name: 源码构建 libheif 1.23（apt/brew 版本过旧，libheif-sys 要求 >=1.23）
-        if: runner.os != 'Windows'
         run: |
-          git clone --depth 1 --branch v1.23.2 https://github.com/strukturag/libheif.git /tmp/libheif
-          cmake -S /tmp/libheif -B /tmp/libheif/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-          cmake --build /tmp/libheif/build -j
-          sudo cmake --install /tmp/libheif/build
-          if [ "$RUNNER_OS" = "Linux" ]; then sudo ldconfig; fi
+          brew install libheif
+          echo "PKG_CONFIG_PATH=$(brew --prefix libheif)/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: 安装 libheif（Windows，vcpkg + 二进制缓存）
         if: runner.os == 'Windows'

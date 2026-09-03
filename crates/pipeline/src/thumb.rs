@@ -36,7 +36,10 @@ fn fit_within(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
         return (w.max(1), h.max(1));
     }
     let scale = f64::from(max_edge) / f64::from(long);
-    ((f64::from(w) * scale).round() as u32, (f64::from(h) * scale).round() as u32)
+    (
+        (f64::from(w) * scale).round() as u32,
+        (f64::from(h) * scale).round() as u32,
+    )
 }
 
 /// 缩略图存储 key：`{sha 前 2 位}/{sha}.webp`（二级目录避免单目录文件过多）
@@ -61,7 +64,11 @@ mod tests {
                 rgb.extend_from_slice(&[(x % 256) as u8, (y % 256) as u8, 128]);
             }
         }
-        DecodedImage { width: w, height: h, rgb }
+        DecodedImage {
+            width: w,
+            height: h,
+            rgb,
+        }
     }
 
     #[test]
