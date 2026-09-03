@@ -30,6 +30,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # clippy/test 会编译 tauri 的 Linux 侧依赖（glib/gtk/webkit2gtk）
+      - name: 安装 Linux 系统依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
