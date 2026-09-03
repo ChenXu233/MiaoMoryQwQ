@@ -1,0 +1,15 @@
+# 统一换行符：仓库内一律 LF，避免三平台构建差异
+* text=auto eol=lf
+
+# Windows 脚本例外
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制资产
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.heic binary
+*.ico binary
+*.onnx binary

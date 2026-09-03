@@ -1,0 +1,37 @@
+# ===== 本地计划（不入库） =====
+/docs/localplans/
+
+# ===== AI 代理本地工作目录 =====
+.zcode/
+
+# ===== Rust =====
+target/
+
+# ===== Node / 前端 =====
+node_modules/
+dist/
+*.local
+
+# ===== Tauri =====
+# Tauri v2 运行时生成的 schema 缓存
+apps/app/src-tauri/gen/schemas/
+
+# ===== 环境与密钥 =====
+.env
+.env.*
+# 更新器签名私钥等，任何密钥不得入库
+*.key
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+!.vscode/extensions.json
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 日志与临时文件 =====
+*.log
+*.tmp
