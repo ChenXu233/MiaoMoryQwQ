@@ -21,6 +21,11 @@ pub struct AppState {
     pub engine: Arc<ImportEngine>,
     pub workspace: ResolvedPaths,
     pub sink: Arc<TauriSink>,
+    pub model_dir: PathBuf,
+    /// 分发源（依次尝试）：默认 GitHub Releases，可经 config.toml 整体替换
+    pub model_endpoints: Vec<String>,
+    /// 已加载的嵌入模型（下载完成后由装配层填充）
+    pub embedder: Arc<std::sync::OnceLock<Arc<mm_embed::ClipEmbedder>>>,
 }
 
 struct SystemClock;
@@ -34,7 +39,12 @@ impl mm_core::Clock for SystemClock {
 }
 
 impl AppState {
-    pub fn build(app: &tauri::AppHandle, workspace: ResolvedPaths) -> Self {
+    pub fn build(
+        app: &tauri::AppHandle,
+        workspace: ResolvedPaths,
+        model_dir: PathBuf,
+        model_endpoints: Vec<String>,
+    ) -> Self {
         let sink = TauriSink::new(app.clone());
         let engine = ImportEngine::new(
             workspace.db_path(),
@@ -47,7 +57,25 @@ impl AppState {
             engine: Arc::new(engine),
             workspace,
             sink,
+            model_dir,
+            model_endpoints,
+            embedder: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// 尝试加载本地模型；返回缺失文件（空 = 就绪）
+    pub fn load_embedder(&self) -> Result<(), Vec<String>> {
+        let manifest = mm_embed::manifest::manifest();
+        let missing = manifest.missing_files(&self.model_dir);
+        if !missing.is_empty() {
+            return Err(missing);
+        }
+        let embedder = mm_embed::ClipEmbedder::load(&self.model_dir, &manifest)
+            .map_err(|_| vec!["load_failed".to_string()])?;
+        self.embedder
+            .set(Arc::new(embedder))
+            .map_err(|_| vec!["already_loaded".to_string()])?;
+        Ok(())
     }
 }
 
@@ -164,6 +192,13 @@ pub struct FailedItem {
     pub asset_id: i32,
     pub path: String,
     pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+pub struct SearchHit {
+    pub summary: AssetSummary,
+    /// 归一相似度（1 - L2²/4），越大越相关
+    pub score: f64,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]

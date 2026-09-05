@@ -51,6 +51,13 @@ pub const MIGRATIONS: &[&str] = &[
         imported_at INTEGER NOT NULL
     );
     CREATE INDEX idx_assets_taken ON assets(taken_at DESC, asset_id DESC);",
+    // v2：向量表（sqlite-vec vec0，元数据外置在 assets）。
+    // 偏差：上游版本忽略 PARTITION KEY 约束（静默不过滤），MVP ≤5 万向量全表 KNN 足够；
+    // 分区键随上游稳定后引入（届时需重建 vec 表，见规格 0003 §7）。
+    "CREATE VIRTUAL TABLE vec_assets USING vec0(
+        asset_id INTEGER PRIMARY KEY,
+        embedding float32[512]
+    );",
 ];
 
 /// 静态注册 sqlite-vec 扩展（对所有新连接生效）
@@ -298,6 +305,7 @@ impl Store {
                 Some(k) => {
                     self.conn
                         .execute("DELETE FROM assets WHERE asset_id=?1", params![id])?;
+                    let _ = self.delete_embedding(id);
                     deleted += 1;
                     if let Some(k) = k {
                         thumb_keys.push(k);
@@ -328,6 +336,80 @@ impl Store {
             "UPDATE assets SET status='pending', error_code=NULL WHERE status='failed'",
             [],
         )?)
+    }
+
+    // ---- 向量检索（P2；迁移 v2 起）----
+
+    /// 写入/覆盖嵌入（vec0 无原地更新，走整行替换）；f32 按 blob 绑定
+    pub fn insert_embedding(&self, asset_id: i64, embedding: &[f32]) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM vec_assets WHERE asset_id = ?1",
+            params![asset_id],
+        )?;
+        let blob = unsafe {
+            std::slice::from_raw_parts(
+                embedding.as_ptr().cast::<u8>(),
+                std::mem::size_of_val(embedding),
+            )
+        };
+        self.conn.execute(
+            "INSERT INTO vec_assets (asset_id, embedding) VALUES (?1, ?2)",
+            params![asset_id, blob],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_embedding(&self, asset_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM vec_assets WHERE asset_id = ?1",
+            params![asset_id],
+        )?;
+        Ok(())
+    }
+
+    /// KNN 检索：返回 (asset_id, distance)；f32 向量以 blob 绑定
+    pub fn knn_search(&self, query: &[f32], k: u32) -> Result<Vec<(i64, f32)>> {
+        let k = k.clamp(1, 1000);
+        let qblob: &[u8] = unsafe {
+            std::slice::from_raw_parts(query.as_ptr().cast::<u8>(), std::mem::size_of_val(query))
+        };
+        let sql = "SELECT asset_id, distance FROM vec_assets
+                   WHERE embedding MATCH ?1 AND k = ?2";
+        let rows = self
+            .conn
+            .prepare(sql)?
+            .query_map(params![qblob, k], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, f32>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 待嵌入的 ready 资产（嵌入管线取件）
+    pub fn list_ready_without_embedding(&self, limit: u32) -> Result<Vec<(i64, String)>> {
+        let sql = "SELECT a.asset_id, a.year FROM assets a
+                   WHERE a.status = 'ready'
+                     AND a.asset_id NOT IN (SELECT asset_id FROM vec_assets)
+                   ORDER BY a.asset_id LIMIT ?1";
+        let rows = self
+            .conn
+            .prepare(sql)?
+            .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 已嵌入数量
+    pub fn count_embedded(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM vec_assets", [], |r| r.get(0))?)
+    }
+
+    /// 清空全部嵌入（重建索引用）
+    pub fn clear_embeddings(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM vec_assets", [])?;
+        Ok(())
     }
 }
 
@@ -404,7 +486,7 @@ mod tests {
     #[test]
     fn migration_creates_v1_schema() {
         let store = Store::open_memory().unwrap();
-        assert_eq!(store.user_version().unwrap(), 1);
+        assert!(store.user_version().unwrap() >= 1, "至少完成 v1 迁移");
         let count: i64 = store
             .conn
             .query_row("SELECT COUNT(*) FROM assets", [], |r| r.get(0))
@@ -528,6 +610,59 @@ mod tests {
             .mark_ready(id, 1, 1, 1_700_000_000, "image/jpeg", None, "k")
             .unwrap();
         assert!(store.exists_ready(sha).unwrap());
+    }
+
+    #[test]
+    fn migration_creates_v2_vec_table() {
+        let store = Store::open_memory().unwrap();
+        assert!(store.user_version().unwrap() >= 2);
+        let id = store
+            .insert_pending(&new_asset("vec-sha", 1_700_000_000))
+            .unwrap()
+            .asset_id;
+        store
+            .mark_ready(id, 1, 1, 1_700_000_000, "image/jpeg", None, "k")
+            .unwrap();
+
+        let emb: Vec<f32> = (0..512).map(|i| ((i % 64) as f32 - 32.0) / 32.0).collect();
+        store.insert_embedding(id, &emb).unwrap();
+        assert_eq!(store.count_embedded().unwrap(), 1);
+
+        let hits = store.knn_search(&emb, 5).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, id);
+        // 距离为 0（自身）
+        assert!(hits[0].1.abs() < 1e-4);
+
+        // 重复插入 = 覆盖（vec0 无原地更新语义由上层保证）
+        store.insert_embedding(id, &emb).unwrap();
+        assert_eq!(store.count_embedded().unwrap(), 1);
+
+        // 删除资产级联删除向量
+        store.delete_assets(&[id]).unwrap();
+        assert_eq!(store.count_embedded().unwrap(), 0);
+    }
+
+    #[test]
+    fn pending_embedding_queue_and_clear() {
+        let store = Store::open_memory().unwrap();
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let id = store
+                .insert_pending(&new_asset(&format!("pq{i}"), 1_700_000_000))
+                .unwrap()
+                .asset_id;
+            store
+                .mark_ready(id, 1, 1, 1_700_000_000, "image/jpeg", None, "k")
+                .unwrap();
+            ids.push(id);
+        }
+        assert_eq!(store.list_ready_without_embedding(10).unwrap().len(), 3);
+        let emb: Vec<f32> = vec![0.0; 512];
+        store.insert_embedding(ids[0], &emb).unwrap();
+        assert_eq!(store.list_ready_without_embedding(10).unwrap().len(), 2);
+        store.clear_embeddings().unwrap();
+        assert_eq!(store.list_ready_without_embedding(10).unwrap().len(), 3);
     }
 
     #[test]

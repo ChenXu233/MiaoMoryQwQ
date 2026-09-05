@@ -2,10 +2,19 @@
 // App 编排：空态引导 / 导入进度 / 时间轴浏览（状态矩阵见 docs/spec/0001、0002）
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
-import { commands, events, type ImportProgressEvent } from "@miaomory/contracts";
+import {
+  commands,
+  events,
+  type AssetSummary,
+  type ImportProgressEvent,
+  type SearchHit,
+} from "@miaomory/contracts";
 import EmptyGuide from "./components/EmptyGuide.vue";
 import ImportBar from "./components/ImportBar.vue";
+import SearchBar from "./components/SearchBar.vue";
 import Timeline from "./components/Timeline.vue";
+import Lightbox from "./components/Lightbox.vue";
+import { assetSrc, errorCopy } from "./lib/ui";
 
 type Phase = "loading" | "empty" | "browsing";
 
@@ -16,6 +25,17 @@ const finishNotice = ref<string | null>(null);
 const failedBanner = ref(false);
 const importError = ref<string | null>(null);
 const timeline = ref<InstanceType<typeof Timeline> | null>(null);
+const searchbar = ref<InstanceType<typeof SearchBar> | null>(null);
+
+// ---- 搜索状态（规格 0003 七状态）----
+const modelReady = ref(false);
+const modelFilesMissing = ref<string[]>([]);
+const downloading = ref<{ file: string; received: number; total: number } | null>(null);
+const searching = ref(false);
+const searchResults = ref<SearchHit[] | null>(null);
+const pendingIndexing = ref(0);
+const searchError = ref(false);
+const lightboxIndex = ref<number | null>(null);
 
 const showGuide = computed(() => phase.value === "empty" && job.value === null);
 let unlisteners: Array<() => void> = [];
@@ -49,9 +69,29 @@ onMounted(async () => {
           ? `导入完成，${e.payload.failed_count} 个文件无法读取`
           : "导入完成";
       phase.value = "browsing";
+      void timeline.value?.reload();
       window.setTimeout(() => (finishNotice.value = null), 6000);
     }),
   );
+
+  // 模型状态 + 订阅模型/嵌入事件
+  unlisteners.push(
+    await events.modelDownloadProgressEvent.listen((e) => {
+      downloading.value = e.payload;
+    }),
+  );
+  unlisteners.push(
+    await events.modelReadyEvent.listen(() => {
+      downloading.value = null;
+      void refreshModelStatus();
+    }),
+  );
+  unlisteners.push(
+    await events.embedProgressEvent.listen(() => {
+      void refreshModelStatus();
+    }),
+  );
+  await refreshModelStatus();
 
   // 初始态：看库里有没有照片
   const snap = await commands.importSnapshot();
@@ -69,6 +109,47 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => unlisteners.forEach((off) => off()));
+
+async function refreshModelStatus() {
+  const status = await commands.modelStatus();
+  modelReady.value = status.ready && status.loaded;
+  modelFilesMissing.value = status.files_missing;
+}
+
+async function onSearch(query: string) {
+  searchError.value = false;
+  const q = query.trim();
+  if (!q) {
+    searchResults.value = null;
+    return;
+  }
+  searching.value = true;
+  try {
+    const res = await commands.searchAssets(q, 100);
+    if (res.status === "ok") {
+      searchResults.value = res.data.items;
+      pendingIndexing.value = res.data.pending_indexing;
+    } else {
+      searchResults.value = [];
+      searchError.value = true;
+    }
+  } finally {
+    searching.value = false;
+  }
+}
+
+function downloadModels() {
+  void commands.downloadModels();
+}
+
+const searchItems = computed<AssetSummary[]>(() =>
+  (searchResults.value ?? []).map((h) => h.summary),
+);
+
+function openResult(item: AssetSummary) {
+  const idx = searchItems.value.findIndex((it) => it.asset_id === item.asset_id);
+  if (idx >= 0) lightboxIndex.value = idx;
+}
 
 async function pickFolder() {
   importError.value = null;
@@ -133,10 +214,72 @@ function onStop() {
       @stop="onStop"
     />
 
-    <main class="min-h-0 flex-1">
+    <main class="flex min-h-0 flex-1 flex-col gap-3 px-6 pb-4 pt-3">
       <EmptyGuide v-if="showGuide" @pick-folder="pickFolder" />
-      <div v-else-if="phase === 'loading'" class="p-6 text-sm text-muted">加载中…</div>
-      <Timeline v-show="phase === 'browsing'" ref="timeline" />
+      <template v-else-if="phase !== 'loading'">
+        <div class="mx-auto w-full max-w-5xl">
+          <SearchBar
+            ref="searchbar"
+            :model-ready="modelReady"
+            :searching="searching"
+            @search="onSearch"
+            @download-models="downloadModels"
+          />
+          <div v-if="downloading" class="mt-2 text-xs text-muted" role="status">
+            正在下载识别模型 {{ downloading.file }}：{{ Math.round(downloading.received / 1e6) }} /
+            {{ Math.round(downloading.total / 1e6) }} MB（已下载部分不会丢失）
+          </div>
+          <div v-if="pendingIndexing > 0 && modelReady" class="mt-2 text-xs text-muted" role="status">
+            还有 {{ pendingIndexing }} 张照片正在建立索引，结果稍后会更完整。
+          </div>
+        </div>
+
+        <!-- 搜索结果 -->
+        <div v-if="searchResults !== null" class="min-h-0 flex-1 overflow-y-auto">
+          <div v-if="searchError" class="mx-auto max-w-5xl text-sm text-danger">
+            {{ errorCopy("search_unavailable") }}
+          </div>
+          <div
+            v-else-if="searchResults.length === 0"
+            class="pt-10 text-center text-sm text-muted"
+          >
+            没有找到相关照片。试试更具体的词，比如「火锅」「雪山」。
+          </div>
+          <div v-else class="grid grid-cols-4 gap-2 md:grid-cols-6">
+            <button
+              v-for="item in searchItems"
+              :key="item.asset_id"
+              type="button"
+              class="aspect-square overflow-hidden rounded-md bg-line focus-visible:outline-2 focus-visible:outline-accent"
+              @click="openResult(item)"
+            >
+              <img
+                v-if="item.thumb_path"
+                :src="assetSrc(item.thumb_path)"
+                alt=""
+                loading="lazy"
+                class="h-full w-full object-cover hover:opacity-90"
+              />
+            </button>
+          </div>
+        </div>
+
+        <!-- 时间轴浏览 -->
+        <Timeline v-show="searchResults === null" class="min-h-0 flex-1" ref="timeline" />
+      </template>
     </main>
+
+    <Lightbox
+      v-if="lightboxIndex !== null"
+      :items="searchItems"
+      :index="lightboxIndex"
+      @closed="
+        () => {
+          lightboxIndex = null;
+          void timeline?.reload();
+        }
+      "
+      @navigate="(i: number) => (lightboxIndex = i)"
+    />
   </div>
 </template>
