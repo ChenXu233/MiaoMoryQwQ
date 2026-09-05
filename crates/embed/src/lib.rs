@@ -200,7 +200,9 @@ fn load_session(bytes: &[u8]) -> Result<Session, ErrorCode> {
     let mut builder = builder
         .with_execution_providers([ep::CoreML::default().build(), ep::CPU::default().build()])
         .map_err(|_| ErrorCode::ModelMissing)?;
-    builder.commit_from_memory(bytes).map_err(|_| ErrorCode::ModelMissing)
+    builder
+        .commit_from_memory(bytes)
+        .map_err(|_| ErrorCode::ModelMissing)
 }
 
 impl Embedder for ClipEmbedder {
