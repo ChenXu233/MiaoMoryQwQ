@@ -14,7 +14,6 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use mm_core::{DecodedImage, Embedder, ErrorCode};
-use ort::ep;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Tensor;
 
@@ -184,7 +183,12 @@ where
 }
 
 fn load_session(bytes: &[u8]) -> Result<Session, ErrorCode> {
-    let builder = Session::builder()
+    #[cfg(any(windows, target_os = "macos"))]
+    use ort::ep;
+
+    // Linux 无 EP shadowing：基础绑定需要 mut；Windows/macOS 被 shadow 消费，mut 闲置
+    #[allow(unused_mut)]
+    let mut builder = Session::builder()
         .map_err(|_| ErrorCode::ModelMissing)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|_| ErrorCode::ModelMissing)?;
@@ -196,9 +200,7 @@ fn load_session(bytes: &[u8]) -> Result<Session, ErrorCode> {
     let mut builder = builder
         .with_execution_providers([ep::CoreML::default().build(), ep::CPU::default().build()])
         .map_err(|_| ErrorCode::ModelMissing)?;
-    builder
-        .commit_from_memory(bytes)
-        .map_err(|_| ErrorCode::ModelMissing)
+    builder.commit_from_memory(bytes).map_err(|_| ErrorCode::ModelMissing)
 }
 
 impl Embedder for ClipEmbedder {
