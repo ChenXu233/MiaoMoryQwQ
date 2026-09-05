@@ -1,7 +1,7 @@
 //! P2/P3 命令：模型状态/下载、混合检索（语义流 + 文本流 → RRF 融合）、重建索引。
 //! 规格 0003、0004、0005。
 
-use mm_core::search::{rrf_fuse, Matched};
+use mm_core::search::rrf_fuse;
 use mm_store::Store;
 use serde::{Deserialize, Serialize};
 use specta::Type;
