@@ -1,7 +1,9 @@
-//! P2 命令：模型状态/下载、语义搜索、重建索引（规格 0003、0004）。
+//! P2/P3 命令：模型状态/下载、混合检索（语义流 + 文本流 → RRF 融合）、重建索引。
+//! 规格 0003、0004、0005。
 
+use mm_core::search::rrf_fuse;
 use mm_store::Store;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, State};
 use tauri_specta::Event;
@@ -70,45 +72,119 @@ pub fn download_models(app: AppHandle, state: State<'_, AppState>) -> Result<(),
     Ok(())
 }
 
-/// 中文语义搜索（规格 0003）：文本编码 → KNN → join assets
+/// 检索过滤器（日期区间 / 类型）
+#[derive(Debug, Clone, Default, Deserialize, Type)]
+pub struct SearchFilters {
+    pub taken_from: Option<f64>,
+    pub taken_to: Option<f64>,
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct SearchPage {
+    pub items: Vec<SearchHit>,
+    pub model_ready: bool,
+    pub pending_indexing: i32,
+    pub available_years: Vec<String>,
+}
+
+/// 混合检索（规格 0003/0005）：语义流 + 文本流 → RRF（k=60）融合，过滤前置
 #[tauri::command]
 #[specta::specta]
 pub async fn search_assets(
     state: State<'_, AppState>,
     query: String,
     top_k: Option<u32>,
+    filters: Option<SearchFilters>,
 ) -> Result<SearchPage, String> {
-    let empty = || SearchPage {
+    let empty = |model_ready: bool| SearchPage {
         items: Vec::new(),
-        model_ready: false,
+        model_ready,
         pending_indexing: 0,
+        available_years: Vec::new(),
     };
-    if query.trim().is_empty() {
-        return Ok(empty());
-    }
     let Some(embedder) = state.embedder.get().cloned() else {
-        return Ok(empty());
+        return Ok(empty(false));
+    };
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(empty(true));
+    }
+
+    let store = store_at(&state)?;
+    let k = top_k.unwrap_or(100).clamp(1, 500);
+    let filters = filters.unwrap_or_default();
+
+    let passes_filters = |row: &mm_store::AssetRow| -> bool {
+        if let Some(from) = filters.taken_from {
+            if (row.taken_at as f64) < from {
+                return false;
+            }
+        }
+        if let Some(to) = filters.taken_to {
+            if (row.taken_at as f64) > to {
+                return false;
+            }
+        }
+        if let Some(ref kind) = filters.kind {
+            if !kind.is_empty() {
+                let matches_kind = match row.kind {
+                    mm_core::AssetKind::Photo => kind == "photo",
+                    mm_core::AssetKind::Video => kind == "video",
+                    mm_core::AssetKind::Audio => kind == "audio",
+                };
+                if !matches_kind {
+                    return false;
+                }
+            }
+        }
+        true
     };
 
+    // ---- 语义流 ----
     let qvec = embedder
-        .embed_text(&query)
+        .embed_text(trimmed)
         .map_err(|c| c.slug().to_string())?;
-    let store = store_at(&state)?;
-    let k = top_k.unwrap_or(100);
-    let hits = store.knn_search(&qvec, k).map_err(|e| e.to_string())?;
-    let pending = store
-        .list_ready_without_embedding(u32::MAX)
-        .map(|v| v.len() as i32)
-        .unwrap_or(0);
-
-    let items = hits
+    let semantic_ids: Vec<i64> = store
+        .knn_search(&qvec, k)
+        .map_err(|e| e.to_string())?
         .into_iter()
-        .filter_map(|(asset_id, distance)| {
-            let row = store.get_asset(asset_id).ok()??;
-            let score = (1.0 - distance / 4.0).clamp(0.0, 1.0); // L2² ∈ [0,4] → 归一相似度
+        .filter_map(|(asset_id, _)| store.get_asset(asset_id).ok().flatten())
+        .filter(|row| passes_filters(row))
+        .map(|row| row.asset_id)
+        .collect();
+
+    // ---- 文本流（文件名；FTS 语法已由 build_match_query 清洗）----
+    let match_query = Store::build_match_query(trimmed);
+    let text_ids: Vec<i64> = if match_query.is_empty() {
+        Vec::new()
+    } else {
+        store
+            .search_fts(&match_query, k)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter_map(|asset_id| store.get_asset(asset_id).ok().flatten())
+            .filter(|row| passes_filters(row))
+            .map(|row| row.asset_id)
+            .collect()
+    };
+
+    // ---- RRF 融合（k=60，白皮书 §4.6）----
+    let sem_ids: Vec<u64> = semantic_ids.iter().map(|i| *i as u64).collect();
+    let txt_ids: Vec<u64> = text_ids.iter().map(|i| *i as u64).collect();
+    let fused = rrf_fuse(&sem_ids, &txt_ids, 60.0);
+    let max_score = fused.first().map(|h| h.score).unwrap_or(1.0).max(1e-9);
+
+    let items = fused
+        .into_iter()
+        .filter_map(|hit| {
+            let row = store
+                .get_asset(i64::try_from(hit.asset_id).unwrap_or(0))
+                .ok()
+                .flatten()?;
             Some(SearchHit {
                 summary: AssetSummary {
-                    asset_id: i32::try_from(row.asset_id).ok()?,
+                    asset_id: i32::try_from(hit.asset_id).unwrap_or(0),
                     thumb_path: row.thumb_key.map(|key| {
                         crate::state::thumbs_abs_path(&state.workspace, &key)
                             .to_string_lossy()
@@ -118,23 +194,29 @@ pub async fn search_assets(
                     height: row.height,
                     taken_at: row.taken_at as f64,
                 },
-                score: score as f64,
+                score: (hit.score / max_score * 1000.0).round() / 1000.0,
+                matched: hit.matched.slug().to_string(),
             })
         })
         .collect();
+
+    let pending = store
+        .list_ready_without_embedding(u32::MAX)
+        .map(|v| v.len() as i32)
+        .unwrap_or(0);
+    let mut available_years: Vec<String> = Vec::new();
+    for row in store.list_page(None, 500).unwrap_or_default() {
+        if !available_years.contains(&row.year) {
+            available_years.push(row.year.clone());
+        }
+    }
 
     Ok(SearchPage {
         items,
         model_ready: true,
         pending_indexing: pending,
+        available_years,
     })
-}
-
-#[derive(Debug, Clone, Serialize, Type)]
-pub struct SearchPage {
-    pub items: Vec<SearchHit>,
-    pub model_ready: bool,
-    pub pending_indexing: i32,
 }
 
 /// 重建全部向量索引（模型变更/量化策略变更时）；worker 轮询发现空队列后全量重嵌

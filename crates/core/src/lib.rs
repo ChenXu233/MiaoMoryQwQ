@@ -56,6 +56,8 @@ pub struct DecodedImage {
     pub rgb: Vec<u8>,
 }
 
+pub mod search;
+
 /// pipeline 进度事件（`EventSink` 载荷；装配层桥接为 tauri 事件）
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]

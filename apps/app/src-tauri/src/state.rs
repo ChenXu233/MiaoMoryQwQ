@@ -197,8 +197,10 @@ pub struct FailedItem {
 #[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct SearchHit {
     pub summary: AssetSummary,
-    /// 归一相似度（1 - L2²/4），越大越相关
+    /// RRF 归一分（0~1），越大越相关
     pub score: f64,
+    /// 命中来源：both / semantic / text（排序可解释，白皮书 §4.6）
+    pub matched: String,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]

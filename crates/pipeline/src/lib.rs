@@ -331,7 +331,7 @@ impl ImportEngine {
                             taken_at: p.taken_at,
                             imported_at: self.clock.now_unix(),
                         };
-                        let result = (|| -> Result<(), ErrorCode> {
+                        let result = (|| -> Result<i64, ErrorCode> {
                             let out = store.insert_pending(&new_asset).map_err(ErrorCode::from)?;
                             storage.put(&key, &p.thumb)?;
                             store
@@ -345,7 +345,14 @@ impl ImportEngine {
                                     &key,
                                 )
                                 .map_err(ErrorCode::from)?;
-                            Ok(())
+                            // 文本检索流：文件名（去扩展名）进 FTS（P3）
+                            let stem = p
+                                .path
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            let _ = store.insert_fts(out.asset_id, &stem);
+                            Ok(out.asset_id)
                         })();
                         match result {
                             Ok(_) => job.done += 1,

@@ -5,9 +5,18 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 defineProps<{
   modelReady: boolean;
   searching: boolean;
+  years: string[];
+  year: string;
+  kind: string;
 }>();
 
-const emit = defineEmits<{ search: [query: string]; downloadModels: [] }>();
+const emit = defineEmits<{
+  search: [query: string];
+  downloadModels: [];
+  refilter: [];
+  updateYear: [v: string];
+  updateKind: [v: string];
+}>();
 
 const input = ref("");
 const el = ref<HTMLInputElement | null>(null);
@@ -56,6 +65,26 @@ defineExpose({
       >
         搜索中…
       </span>
+      <div v-if="input" class="mt-2 flex gap-2 text-xs">
+        <select
+          :value="year"
+          aria-label="按年份过滤"
+          class="rounded border border-line bg-surface px-2 py-1 text-fg focus-visible:outline-accent"
+          @change="emit('updateYear', ($event.target as HTMLSelectElement).value); emit('refilter')"
+        >
+          <option value="">全部时间</option>
+          <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
+        </select>
+        <select
+          :value="kind"
+          aria-label="按类型过滤"
+          class="rounded border border-line bg-surface px-2 py-1 text-fg focus-visible:outline-accent"
+          @change="emit('updateKind', ($event.target as HTMLSelectElement).value); emit('refilter')"
+        >
+          <option value="">全部类型</option>
+          <option value="photo">照片</option>
+        </select>
+      </div>
     </div>
     <div
       v-else
