@@ -4,6 +4,9 @@ description = "MiaoMory——个人媒体语义索引引擎（Tauri 壳，唯一
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+# src-tauri 里有两个 bin（miaomory-app 与契约生成器 export_contracts），
+# `tauri dev` 走裸 `cargo run`，必须显式指定默认二进制
+default-run = "miaomory-app"
 
 [lib]
 # `_lib` 后缀避免与 bin 名冲突（Windows，见 rust-lang/cargo#8519）
