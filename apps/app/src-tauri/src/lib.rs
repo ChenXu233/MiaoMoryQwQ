@@ -4,6 +4,7 @@
 //! 声明 IPC 命令（specta 契约的唯一事实源）、注册插件、初始化平台层。
 
 mod commands;
+mod data_commands;
 mod embed_worker;
 mod events;
 mod search_commands;
@@ -43,6 +44,9 @@ pub fn app_builder() -> Builder<Wry> {
             search_commands::download_models,
             search_commands::search_assets,
             search_commands::reindex_all,
+            data_commands::data_info,
+            data_commands::open_data_folder,
+            data_commands::set_data_location,
         ])
         .events(collect_events![
             ImportProgressEvent,
@@ -73,8 +77,13 @@ pub fn run() {
     #[cfg(debug_assertions)]
     export_bindings(&builder);
 
-    mm_platform::init_tracing().expect("初始化日志失败");
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "MiaoMory 启动");
+    // 布局解析（ADR-0011）先于日志初始化：logs 落点由布局决定
+    let paths = mm_platform::resolve_layout().expect("解析数据布局失败");
+    mm_platform::init_tracing(&paths).expect("初始化日志失败");
+    if let Some(err) = &paths.config_load_error {
+        tracing::warn!(error = %err, "配置文件解析失败，已回退默认值");
+    }
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), mode = ?paths.mode, "MiaoMory 启动");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -86,21 +95,13 @@ pub fn run() {
             builder.mount_events(app);
 
             // 装配：工作区/模型路径 + 导入引擎 + 嵌入模型槽位
-            let config = mm_platform::load_config().expect("读取配置失败");
-            let paths = config.resolved().expect("解析路径失败");
             mm_platform::ensure_workspace_layout(&paths).expect("创建工作区目录失败");
             app.asset_protocol_scope()
                 .allow_directory(paths.workspace_dir.clone(), true)
                 .ok();
 
-            // 分发源：config 覆盖优先，否则默认 GitHub Release（规格 0004）
-            let endpoints = match config.hf_endpoint {
-                Some(ref url) => vec![url.clone()],
-                None => vec![
-                    "https://github.com/ChenXu233/MiaoMoryQwQ/releases/download/models-v1"
-                        .to_string(),
-                ],
-            };
+            // 分发源：config.hf_endpoint 覆盖优先，默认 GitHub Release（规格 0004 / ADR-0010）
+            let endpoints = vec![paths.hf_endpoint.clone()];
             let model_dir = paths.model_dir.clone();
             app.manage(AppState::build(app.handle(), paths, model_dir, endpoints));
 

@@ -7,6 +7,9 @@
 # ===== Rust =====
 target/
 
+# ===== 开发期数据目录（MIAOMORY_DATA_DIR 默认指向这里，ADR-0011） =====
+/.devdata/
+
 # ===== Node / 前端 =====
 node_modules/
 dist/

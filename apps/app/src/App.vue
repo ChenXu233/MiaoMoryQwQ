@@ -14,6 +14,7 @@ import ImportBar from "./components/ImportBar.vue";
 import SearchBar from "./components/SearchBar.vue";
 import Timeline from "./components/Timeline.vue";
 import Lightbox from "./components/Lightbox.vue";
+import DataSettings from "./components/DataSettings.vue";
 import { assetSrc, errorCopy } from "./lib/ui";
 
 type Phase = "loading" | "empty" | "browsing";
@@ -41,6 +42,8 @@ const filterYear = ref("");
 const filterKind = ref("");
 
 const showGuide = computed(() => phase.value === "empty" && job.value === null);
+const showSettings = ref(false);
+const settingsBtn = ref<HTMLButtonElement | null>(null);
 let unlisteners: Array<() => void> = [];
 
 onMounted(async () => {
@@ -199,15 +202,25 @@ function onStop() {
   <div class="flex h-full flex-col bg-bg text-fg">
     <header class="flex items-center justify-between px-6 py-3">
       <h1 class="text-lg font-semibold">MiaoMory</h1>
-      <span v-if="finishNotice" class="text-sm text-success">{{ finishNotice }}</span>
-      <button
-        v-if="phase === 'browsing' && job === null"
-        type="button"
-        class="rounded-md border border-line px-3 py-1.5 text-sm transition-colors hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent"
-        @click="pickFolder"
-      >
-        导入文件夹
-      </button>
+      <div class="flex items-center gap-2">
+        <span v-if="finishNotice" class="text-sm text-success">{{ finishNotice }}</span>
+        <button
+          ref="settingsBtn"
+          type="button"
+          class="rounded-md px-2.5 py-1.5 text-sm text-muted transition-colors hover:bg-surface hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+          @click="showSettings = true"
+        >
+          设置
+        </button>
+        <button
+          v-if="phase === 'browsing' && job === null"
+          type="button"
+          class="rounded-md border border-line px-3 py-1.5 text-sm transition-colors hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent"
+          @click="pickFolder"
+        >
+          导入文件夹
+        </button>
+      </div>
     </header>
 
     <div
@@ -298,6 +311,16 @@ function onStop() {
         <Timeline v-show="searchResults === null" class="min-h-0 flex-1" ref="timeline" />
       </template>
     </main>
+
+    <DataSettings
+      v-if="showSettings"
+      @close="
+        () => {
+          showSettings = false;
+          settingsBtn?.focus();
+        }
+      "
+    />
 
     <Lightbox
       v-if="lightboxIndex !== null"

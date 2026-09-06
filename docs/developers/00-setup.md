@@ -47,6 +47,16 @@ git clone --depth 1 https://github.com/microsoft/vcpkg.git "$HOME\vcpkg"
 
 macOS / Linux：`brew install libheif` 或 `apt install libheif-dev`（libheif-rs 走 pkg-config，无需上述环境变量）。
 
+### 开发期数据目录（ADR-0011）
+
+`tauri dev` 的"安装目录"是 `target\debug`，会被 `cargo clean` 清除。开发时用环境变量把数据指到仓库内忽略目录：
+
+```bash
+export MIAOMORY_DATA_DIR="$PWD/.devdata"   # 已列入 .gitignore
+```
+
+优先级与全部布局规则见 ADR-0011 与 `docs/spec/0006-settings.md`。
+
 ### 验证安装
 
 ```bash
