@@ -5,6 +5,8 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 defineProps<{
   modelReady: boolean;
   searching: boolean;
+  /** 自动下载进行中：引导块隐藏（全局进度条已可见，避免双重提示） */
+  downloading: boolean;
   years: string[];
   year: string;
   kind: string;
@@ -87,16 +89,16 @@ defineExpose({
       </div>
     </div>
     <div
-      v-else
+      v-else-if="!downloading"
       class="flex flex-wrap items-center gap-3 rounded-md border border-line bg-surface px-4 py-3 text-sm"
     >
-      <span class="text-fg">搜索功能需要先下载识别模型（约 200MB，仅一次）。模型只在本机运行，照片不会上传。</span>
+      <span class="text-fg">导入索引与搜索需要一套中文图文语义模型（约 200MB，仅一次）。模型只在本机运行，照片不会上传。</span>
       <button
         type="button"
         class="rounded-md bg-accent px-3 py-1.5 text-sm text-accent-fg transition-colors hover:opacity-90 focus-visible:outline-2 focus-visible:outline-accent"
         @click="emit('downloadModels')"
       >
-        下载识别模型
+        重试下载
       </button>
     </div>
   </div>

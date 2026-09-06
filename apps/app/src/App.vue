@@ -98,6 +98,8 @@ onMounted(async () => {
     }),
   );
   await refreshModelStatus();
+  // 规格 0004（2026-09-06 修订）：导入索引与搜索共用模型，启动发现缺失即自动后台下载
+  if (!modelReady.value) void commands.downloadModels();
 
   // 初始态：看库里有没有照片
   const snap = await commands.importSnapshot();
@@ -237,6 +239,16 @@ function onStop() {
       </button>
     </div>
 
+    <div
+      v-if="downloading"
+      class="mx-auto w-full max-w-5xl rounded-md border border-line bg-surface px-4 py-2 text-sm"
+      role="status"
+    >
+      正在下载语义模型（导入索引与搜索共用）{{ downloading.file }}：
+      {{ Math.round(downloading.received / 1e6) }} /
+      {{ Math.round(downloading.total / 1e6) }} MB（已下载部分不会丢失）
+    </div>
+
     <ImportBar
       v-if="job"
       :job="job"
@@ -254,6 +266,7 @@ function onStop() {
             ref="searchbar"
             :model-ready="modelReady"
             :searching="searching"
+            :downloading="downloading !== null"
             :years="availableYears"
             :kind="filterKind"
             :year="filterYear"
@@ -261,10 +274,6 @@ function onStop() {
             @download-models="downloadModels"
             @refilter="refilter"
           />
-          <div v-if="downloading" class="mt-2 text-xs text-muted" role="status">
-            正在下载识别模型 {{ downloading.file }}：{{ Math.round(downloading.received / 1e6) }} /
-            {{ Math.round(downloading.total / 1e6) }} MB（已下载部分不会丢失）
-          </div>
           <div v-if="pendingIndexing > 0 && modelReady" class="mt-2 text-xs text-muted" role="status">
             还有 {{ pendingIndexing }} 张照片正在建立索引，结果稍后会更完整。
           </div>

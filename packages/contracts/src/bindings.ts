@@ -24,7 +24,10 @@ export const commands = {
 	/**  失败清单 */
 	listFailedItems: () => typedError<FailedItem[], string>(__TAURI_INVOKE("list_failed_items")),
 	modelStatus: () => __TAURI_INVOKE<ModelStatus>("model_status"),
-	/**  下载模型资产（后台线程；进度经事件上报，完成后加载并广播就绪） */
+	/**
+	 *  下载模型资产（后台线程；进度经事件上报，完成后加载并广播就绪）。
+	 *  幂等：已就绪或已有下载任务时直接返回。启动时模型缺失即自动调用（spec 0004 修订）。
+	 */
 	downloadModels: () => typedError<null, string>(__TAURI_INVOKE("download_models")),
 	/**  混合检索（规格 0003/0005）：语义流 + 文本流 → RRF（k=60）融合，过滤前置 */
 	searchAssets: (query: string, topK: number | null, filters: {
