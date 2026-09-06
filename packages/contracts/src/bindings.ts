@@ -34,6 +34,11 @@ export const commands = {
 } | null) => typedError<SearchPage, string>(__TAURI_INVOKE("search_assets", { query, topK, filters })),
 	/**  重建全部向量索引（模型变更/量化策略变更时）；worker 轮询发现空队列后全量重嵌 */
 	reindexAll: () => typedError<number, string>(__TAURI_INVOKE("reindex_all")),
+	dataInfo: () => __TAURI_INVOKE<DataInfo>("data_info"),
+	/**  用系统文件管理器打开数据目录；目录丢失时重建后重试一次（规格 0006 §3.3） */
+	openDataFolder: () => typedError<null, string>(__TAURI_INVOKE("open_data_folder")),
+	/**  更改数据位置：校验可写与嵌套关系后写入 config.data_dir，重启生效（规格 0006 §3.2） */
+	setDataLocation: (dir: string) => typedError<null, string>(__TAURI_INVOKE("set_data_location", { dir })),
 };
 
 /** Events */
@@ -56,6 +61,23 @@ export type AssetSummary = {
 	width: number | null,
 	height: number | null,
 	taken_at: number | null,
+};
+
+/**  当前数据布局快照（设置对话框数据区） */
+export type DataInfo = {
+	/**  env | portable | rooted | classic */
+	mode: string,
+	/**  数据随应用目录携带（口袋式，含 env/rooted 指定的数据根） */
+	portable: boolean,
+	db_path: string,
+	thumbs_dir: string,
+	models_dir: string,
+	logs_dir: string,
+	/**  「打开数据文件夹」的目标目录 */
+	data_folder: string,
+	config_path: string,
+	/**  是否允许在设置里更改位置（env 模式禁用） */
+	can_change: boolean,
 };
 
 export type DeleteReport = {
