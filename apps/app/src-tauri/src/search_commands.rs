@@ -34,12 +34,24 @@ pub fn model_status(state: State<'_, AppState>) -> ModelStatus {
     }
 }
 
-/// 下载模型资产（后台线程；进度经事件上报，完成后加载并广播就绪）
+/// 下载任务在跑的标记：启动自动触发与手动按钮并发时防双重下载（spec 0004 验收 7）
+static DOWNLOAD_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 下载模型资产（后台线程；进度经事件上报，完成后加载并广播就绪）。
+/// 幂等：已就绪或已有下载任务时直接返回。启动时模型缺失即自动调用（spec 0004 修订）。
 #[tauri::command]
 #[specta::specta]
 pub fn download_models(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
     if state.embedder.get().is_some() {
         return Ok(()); // 已就绪，幂等
+    }
+    if DOWNLOAD_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(()); // 已有下载任务在跑
     }
     let endpoints = state.model_endpoints.clone();
     let model_dir = state.model_dir.clone();
@@ -58,7 +70,8 @@ pub fn download_models(app: AppHandle, state: State<'_, AppState>) -> Result<(),
             .emit(&app2);
         };
         if downloader.ensure_all(&manifest, &progress).is_err() {
-            tracing::warn!("模型下载失败");
+            tracing::warn!(code = "model_download_failed", "模型下载失败");
+            DOWNLOAD_IN_FLIGHT.store(false, Ordering::SeqCst); // 允许手动重试
             return;
         }
         match mm_embed::ClipEmbedder::load(&model_dir, &manifest) {
@@ -68,6 +81,7 @@ pub fn download_models(app: AppHandle, state: State<'_, AppState>) -> Result<(),
             }
             Err(_) => tracing::warn!("模型加载失败"),
         }
+        DOWNLOAD_IN_FLIGHT.store(false, Ordering::SeqCst);
     });
     Ok(())
 }
