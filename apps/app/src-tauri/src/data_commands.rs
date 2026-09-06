@@ -80,7 +80,9 @@ pub fn set_data_location(state: State<'_, AppState>, dir: String) -> Result<(), 
         return Err("新位置与当前位置相同".to_string());
     }
     // 互为祖先会形成嵌套搬迁/解析歧义，一律拒绝
-    if state.workspace.workspace_dir.starts_with(&target) || target.starts_with(&state.workspace.workspace_dir) {
+    if state.workspace.workspace_dir.starts_with(&target)
+        || target.starts_with(&state.workspace.workspace_dir)
+    {
         return Err("新位置不能在当前数据目录内部，当前数据目录也不能在新位置内部".to_string());
     }
     if !dir_is_writable(&target) {

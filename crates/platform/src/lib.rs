@@ -112,7 +112,9 @@ impl ResolvedPaths {
     }
     /// "打开数据文件夹"的目标：数据根（口袋式）或工作区（经典）
     pub fn data_folder(&self) -> PathBuf {
-        self.data_root.clone().unwrap_or_else(|| self.workspace_dir.clone())
+        self.data_root
+            .clone()
+            .unwrap_or_else(|| self.workspace_dir.clone())
     }
     pub fn is_portable(&self) -> bool {
         self.data_root.is_some()
@@ -209,7 +211,10 @@ pub fn resolve_layout_at(
     // ② 显式便携：data\config.toml 或 .portable 标记
     if portable_config.is_file() || exe_dir.join(PORTABLE_MARKER_NAME).is_file() {
         let (cfg, err) = load_config_opt(&portable_config);
-        let root = cfg.data_dir.clone().unwrap_or_else(|| data_root_default.clone());
+        let root = cfg
+            .data_dir
+            .clone()
+            .unwrap_or_else(|| data_root_default.clone());
         return Ok(rooted(DataMode::Portable, root, &cfg, portable_config, err));
     }
 
@@ -229,7 +234,13 @@ pub fn resolve_layout_at(
     if dir_is_writable(exe_dir) {
         let cfg = AppConfig::default();
         save_config_at(&portable_config, &cfg)?;
-        return Ok(rooted(DataMode::Portable, data_root_default, &cfg, portable_config, None));
+        return Ok(rooted(
+            DataMode::Portable,
+            data_root_default,
+            &cfg,
+            portable_config,
+            None,
+        ));
     }
 
     // ⑤ 只读安装目录（如 Program Files）：经典布局
@@ -263,7 +274,9 @@ fn classic(
 ) -> Result<ResolvedPaths, PlatformError> {
     let workspace_dir = match &cfg.workspace_dir {
         Some(p) => p.clone(),
-        None => doc_dir.ok_or(PlatformError::SystemDirUnavailable)?.to_path_buf(),
+        None => doc_dir
+            .ok_or(PlatformError::SystemDirUnavailable)?
+            .to_path_buf(),
     };
     let model_dir = match &cfg.model_dir {
         Some(p) => p.clone(),
@@ -343,8 +356,13 @@ mod tests {
         // 即使存在 .portable 标记，env 也必须胜出
         std::fs::write(exe_dir.join(PORTABLE_MARKER_NAME), "").unwrap();
 
-        let r = resolve_layout_at(&exe_dir, Some(env_dir.clone()), Some(&app_dir_of(&root)), Some(&doc_dir_of(&root)))
-            .unwrap();
+        let r = resolve_layout_at(
+            &exe_dir,
+            Some(env_dir.clone()),
+            Some(&app_dir_of(&root)),
+            Some(&doc_dir_of(&root)),
+        )
+        .unwrap();
 
         assert_eq!(r.mode, DataMode::EnvOverride);
         assert_eq!(r.data_root.as_deref(), Some(env_dir.as_path()));
@@ -360,11 +378,23 @@ mod tests {
         let (root, exe_dir) = sandbox("marker");
         std::fs::write(exe_dir.join(PORTABLE_MARKER_NAME), "").unwrap();
 
-        let r = resolve_layout_at(&exe_dir, None, Some(&app_dir_of(&root)), Some(&doc_dir_of(&root))).unwrap();
+        let r = resolve_layout_at(
+            &exe_dir,
+            None,
+            Some(&app_dir_of(&root)),
+            Some(&doc_dir_of(&root)),
+        )
+        .unwrap();
 
         assert_eq!(r.mode, DataMode::Portable);
-        assert_eq!(r.data_root.as_deref(), Some(exe_dir.join(DATA_DIR_NAME).as_path()));
-        assert_eq!(r.config_path, exe_dir.join(DATA_DIR_NAME).join(CONFIG_FILE_NAME));
+        assert_eq!(
+            r.data_root.as_deref(),
+            Some(exe_dir.join(DATA_DIR_NAME).as_path())
+        );
+        assert_eq!(
+            r.config_path,
+            exe_dir.join(DATA_DIR_NAME).join(CONFIG_FILE_NAME)
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -374,7 +404,13 @@ mod tests {
         std::fs::create_dir_all(exe_dir.join(DATA_DIR_NAME)).unwrap();
         std::fs::write(exe_dir.join(DATA_DIR_NAME).join(CONFIG_FILE_NAME), "").unwrap();
 
-        let r = resolve_layout_at(&exe_dir, None, Some(&app_dir_of(&root)), Some(&doc_dir_of(&root))).unwrap();
+        let r = resolve_layout_at(
+            &exe_dir,
+            None,
+            Some(&app_dir_of(&root)),
+            Some(&doc_dir_of(&root)),
+        )
+        .unwrap();
 
         assert_eq!(r.mode, DataMode::Portable);
         assert_eq!(r.workspace_dir, exe_dir.join(DATA_DIR_NAME));
@@ -393,7 +429,13 @@ mod tests {
         )
         .unwrap();
 
-        let r = resolve_layout_at(&exe_dir, None, Some(&app_dir_of(&root)), Some(&doc_dir_of(&root))).unwrap();
+        let r = resolve_layout_at(
+            &exe_dir,
+            None,
+            Some(&app_dir_of(&root)),
+            Some(&doc_dir_of(&root)),
+        )
+        .unwrap();
 
         assert_eq!(r.mode, DataMode::Portable);
         assert_eq!(r.workspace_dir, custom);
@@ -408,13 +450,25 @@ mod tests {
         let (root, exe_dir) = sandbox("fresh");
         // app_dir 不存在配置文件（全新安装）
 
-        let r = resolve_layout_at(&exe_dir, None, Some(&app_dir_of(&root)), Some(&doc_dir_of(&root))).unwrap();
+        let r = resolve_layout_at(
+            &exe_dir,
+            None,
+            Some(&app_dir_of(&root)),
+            Some(&doc_dir_of(&root)),
+        )
+        .unwrap();
 
         assert_eq!(r.mode, DataMode::Portable);
         assert_eq!(r.workspace_dir, exe_dir.join(DATA_DIR_NAME));
         // 初始 config 已落盘，二次解析结果稳定
         assert!(exe_dir.join(DATA_DIR_NAME).join(CONFIG_FILE_NAME).is_file());
-        let r2 = resolve_layout_at(&exe_dir, None, Some(&app_dir_of(&root)), Some(&doc_dir_of(&root))).unwrap();
+        let r2 = resolve_layout_at(
+            &exe_dir,
+            None,
+            Some(&app_dir_of(&root)),
+            Some(&doc_dir_of(&root)),
+        )
+        .unwrap();
         assert_eq!(r2.mode, DataMode::Portable);
         std::fs::remove_dir_all(&root).ok();
     }
@@ -426,7 +480,13 @@ mod tests {
         let blocker = root.join("not-a-dir");
         std::fs::write(&blocker, "").unwrap();
 
-        let r = resolve_layout_at(&blocker, None, Some(&app_dir_of(&root)), Some(&doc_dir_of(&root))).unwrap();
+        let r = resolve_layout_at(
+            &blocker,
+            None,
+            Some(&app_dir_of(&root)),
+            Some(&doc_dir_of(&root)),
+        )
+        .unwrap();
 
         assert_eq!(r.mode, DataMode::Classic);
         assert_eq!(r.workspace_dir, doc_dir_of(&root));
@@ -442,9 +502,14 @@ mod tests {
         let (root, exe_dir) = sandbox("zerobreak");
         let app_dir = app_dir_of(&root);
         std::fs::create_dir_all(&app_dir).unwrap();
-        std::fs::write(app_dir.join(CONFIG_FILE_NAME), "hf_endpoint = \"https://hf-mirror.com\"\n").unwrap();
+        std::fs::write(
+            app_dir.join(CONFIG_FILE_NAME),
+            "hf_endpoint = \"https://hf-mirror.com\"\n",
+        )
+        .unwrap();
 
-        let r = resolve_layout_at(&exe_dir, None, Some(&app_dir), Some(&doc_dir_of(&root))).unwrap();
+        let r =
+            resolve_layout_at(&exe_dir, None, Some(&app_dir), Some(&doc_dir_of(&root))).unwrap();
 
         // exe 可写也不自动便携（老用户零破坏）
         assert_eq!(r.mode, DataMode::Classic);
@@ -464,7 +529,8 @@ mod tests {
         )
         .unwrap();
 
-        let r = resolve_layout_at(&exe_dir, None, Some(&app_dir), Some(&doc_dir_of(&root))).unwrap();
+        let r =
+            resolve_layout_at(&exe_dir, None, Some(&app_dir), Some(&doc_dir_of(&root))).unwrap();
 
         assert_eq!(r.mode, DataMode::Rooted);
         assert_eq!(r.workspace_dir, custom);
@@ -484,7 +550,8 @@ mod tests {
         )
         .unwrap();
 
-        let r = resolve_layout_at(&exe_dir, None, Some(&app_dir), Some(&doc_dir_of(&root))).unwrap();
+        let r =
+            resolve_layout_at(&exe_dir, None, Some(&app_dir), Some(&doc_dir_of(&root))).unwrap();
 
         assert_eq!(r.mode, DataMode::Classic);
         assert_eq!(r.workspace_dir, ws);
@@ -498,11 +565,20 @@ mod tests {
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::write(data_dir.join(CONFIG_FILE_NAME), "不是 TOML {{{{").unwrap();
 
-        let r = resolve_layout_at(&exe_dir, None, Some(&app_dir_of(&root)), Some(&doc_dir_of(&root))).unwrap();
+        let r = resolve_layout_at(
+            &exe_dir,
+            None,
+            Some(&app_dir_of(&root)),
+            Some(&doc_dir_of(&root)),
+        )
+        .unwrap();
 
         assert_eq!(r.mode, DataMode::Portable);
         assert!(r.config_load_error.is_some());
-        assert_eq!(r.hf_endpoint, "https://github.com/ChenXu233/MiaoMoryQwQ/releases/download/models-v1");
+        assert_eq!(
+            r.hf_endpoint,
+            "https://github.com/ChenXu233/MiaoMoryQwQ/releases/download/models-v1"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
