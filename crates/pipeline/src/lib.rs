@@ -12,12 +12,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mm_core::{Clock, DecodedImage, ErrorCode, EventSink, PipelineEvent, StorageAdapter};
+use mm_core::{Clock, ErrorCode, EventSink, PipelineEvent, StorageAdapter};
 use mm_store::{NewAsset, Store};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
-pub use decode::{decode_photo, is_supported};
+pub use decode::{decode_photo, decode_photo_bytes, is_supported};
 pub use storage::LocalDiskAdapter;
 pub use thumb::{make_thumbnail, thumb_key, THUMB_MAX_EDGE};
 
@@ -27,6 +27,9 @@ pub struct ImportConfig {
     pub chunk_size: usize,
     /// 处理到 done >= N 时自动暂停（0 = 不暂停）；手工验证与测试用
     pub pause_after_done: u64,
+    /// IO 预取内存预算（字节）；0 = 按系统内存自适应 clamp(总内存/8, 256MB, 1GB)。
+    /// 预算同时决定解码工作线程数（约 96MB/张瞬态），总处理内存 ≈ 预算（v5 裁定 22）
+    pub io_budget_bytes: u64,
 }
 
 impl Default for ImportConfig {
@@ -34,8 +37,15 @@ impl Default for ImportConfig {
         Self {
             chunk_size: 32,
             pause_after_done: 0,
+            io_budget_bytes: 0,
         }
     }
+}
+
+/// 自适应预算：clamp(系统总内存 / 8, 256MB, 1GB)；探测失败回退 512MB
+fn adaptive_io_budget() -> u64 {
+    let total = sysinfo::System::new_all().total_memory();
+    (total / 8).clamp(256 * 1024 * 1024, 1024 * 1024 * 1024)
 }
 
 /// 任务快照（命令层返回给 UI）
@@ -74,6 +84,8 @@ pub struct ImportEngine {
     clock: Arc<dyn Clock>,
     config: ImportConfig,
     next_job_id: AtomicU64,
+    /// IO 预取线程的停止开关（abort 时置位；job 字段被锁保护，预取线程不碰锁）
+    io_abort: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ImportEngine {
@@ -92,6 +104,7 @@ impl ImportEngine {
             clock,
             config,
             next_job_id: AtomicU64::new(1),
+            io_abort: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -105,6 +118,7 @@ impl ImportEngine {
             return Err(ErrorCode::ImportBusy);
         }
         let job_id = self.next_job_id.fetch_add(1, Ordering::SeqCst);
+        self.io_abort.store(false, Ordering::SeqCst);
         let files = scan_folder(&folder).map_err(|_| ErrorCode::ReadFailed)?;
         let total = files.len() as u64;
         state.job = Some(JobRuntime {
@@ -147,6 +161,7 @@ impl ImportEngine {
 
     /// 停止任务（用户确认后；幂等恢复 = 重新导入，哈希去重保证无重复）
     pub fn abort(&self) {
+        self.io_abort.store(true, Ordering::SeqCst);
         let mut state = self.state.lock().unwrap();
         if let Some(job) = state.job.as_mut() {
             if !job.finished {
@@ -204,9 +219,43 @@ impl ImportEngine {
         let storage = LocalDiskAdapter::new(self.thumbs_dir.clone());
         let chunk_size = self.config.chunk_size.max(1);
         let mut pause_armed = self.config.pause_after_done > 0;
+        let budget = if self.config.io_budget_bytes > 0 {
+            self.config.io_budget_bytes
+        } else {
+            adaptive_io_budget()
+        };
+        tracing::debug!(budget_mb = budget / (1024 * 1024), "导入 IO 预算");
 
-        for chunk in files.chunks(chunk_size) {
-            // ---- 暂停/停止闸口（chunk 之间；30ms 轮询，粒度对 UI 足够）----
+        // ---- IO 预取线程：整批读入内存（预算内），工作线程解码零盘 IO ----
+        let batch_budget = (budget / 2).max(1);
+        let workers =
+            (budget / (96 * 1024 * 1024)).clamp(1, rayon::current_num_threads() as u64) as usize;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .expect("构建导入工作池失败");
+        let (tx, rx) = std::sync::mpsc::sync_channel::<IoBatch>(1);
+        {
+            let engine = Arc::clone(&self);
+            let abort_flag = Arc::clone(&self.io_abort);
+            let files_for_io = files.clone();
+            std::thread::Builder::new()
+                .name("mm-import-io".into())
+                .spawn(move || {
+                    produce_batches(
+                        &files_for_io,
+                        batch_budget,
+                        chunk_size,
+                        &abort_flag,
+                        &engine,
+                        &tx,
+                    );
+                })
+                .expect("启动 IO 预取线程失败");
+        }
+
+        for batch in rx {
+            // ---- 暂停/停止闸口（批次之间；30ms 轮询，粒度对 UI 足够）----
             loop {
                 let (paused, abort, failed) = {
                     let mut state = self.state.lock().unwrap();
@@ -232,59 +281,67 @@ impl ImportEngine {
                 std::thread::sleep(Duration::from_millis(30));
             }
 
-            // ---- CPU 并行：读文件 → hash → decode → thumb（查库不进并行段）----
-            enum Outcome {
-                Persist(Prepared),
-                Failed(PathBuf, Option<String>, ErrorCode), // sha 在哈希前失败时为 None
-            }
             struct Prepared {
                 path: PathBuf,
                 sha256: String,
                 size: u64,
-                image: DecodedImage,
+                width: u32,
+                height: u32,
                 mime: &'static str,
                 taken_at: i64,
                 exif_json: Option<String>,
                 thumb: Vec<u8>,
             }
 
-            let outcomes: Vec<Outcome> = chunk
-                .par_iter()
-                .map(|path| {
-                    let bytes = match std::fs::read(path) {
-                        Ok(b) => b,
-                        Err(_) => {
-                            return Outcome::Failed(path.clone(), None, ErrorCode::ReadFailed)
-                        }
-                    };
-                    let size = bytes.len() as u64;
-                    let mut hasher = Sha256::new();
-                    hasher.update(&bytes);
-                    let sha256 = hex::encode(hasher.finalize());
+            // ---- CPU 并行：hash → decode → thumb（字节已在内存；查库不进并行段）----
+            enum Outcome {
+                Persist(Prepared),
+                Failed(PathBuf, Option<String>, ErrorCode), // sha 在哈希前失败时为 None
+            }
 
-                    let photo = match decode_photo(path) {
-                        Ok(p) => p,
-                        Err(code) => return Outcome::Failed(path.clone(), Some(sha256), code),
-                    };
-                    let taken_at = photo
-                        .taken_at
-                        .unwrap_or_else(|| mtime_secs(path).unwrap_or(0));
-                    let (thumb, _, _) = match make_thumbnail(&photo.image) {
-                        Ok(t) => t,
-                        Err(code) => return Outcome::Failed(path.clone(), Some(sha256), code),
-                    };
-                    Outcome::Persist(Prepared {
-                        path: path.clone(),
-                        sha256,
-                        size,
-                        image: photo.image,
-                        mime: photo.mime,
-                        taken_at,
-                        exif_json: photo.exif_json,
-                        thumb,
+            let outcomes: Vec<Outcome> = pool.install(|| {
+                batch
+                    .par_iter()
+                    .map(|(path, bytes)| match bytes {
+                        Err(code) => Outcome::Failed(path.clone(), None, *code),
+                        Ok(bytes) => {
+                            let size = bytes.len() as u64;
+                            let mut hasher = Sha256::new();
+                            hasher.update(bytes);
+                            let sha256 = hex::encode(hasher.finalize());
+
+                            let photo = match decode_photo_bytes(bytes, path) {
+                                Ok(p) => p,
+                                Err(code) => {
+                                    return Outcome::Failed(path.clone(), Some(sha256), code)
+                                }
+                            };
+                            let taken_at = photo
+                                .taken_at
+                                .unwrap_or_else(|| mtime_secs(path).unwrap_or(0));
+                            // 元数据就地提取，全尺寸图在闭包末尾即释放（峰值 ≈ 1 张/工作线程）
+                            let (width, height) = (photo.image.width, photo.image.height);
+                            let (thumb, _, _) = match make_thumbnail(&photo.image) {
+                                Ok(t) => t,
+                                Err(code) => {
+                                    return Outcome::Failed(path.clone(), Some(sha256), code)
+                                }
+                            };
+                            Outcome::Persist(Prepared {
+                                path: path.clone(),
+                                sha256,
+                                size,
+                                width,
+                                height,
+                                mime: photo.mime,
+                                taken_at,
+                                exif_json: photo.exif_json,
+                                thumb,
+                            })
+                        }
                     })
-                })
-                .collect();
+                    .collect::<Vec<Outcome>>()
+            });
 
             // ---- 串行持久化 ----
             for outcome in outcomes {
@@ -339,8 +396,8 @@ impl ImportEngine {
                             store
                                 .mark_ready(
                                     out.asset_id,
-                                    p.image.width,
-                                    p.image.height,
+                                    p.width,
+                                    p.height,
                                     p.taken_at,
                                     p.mime,
                                     p.exif_json.as_deref(),
@@ -401,6 +458,45 @@ impl ImportEngine {
             failed_count: failed,
         });
     }
+}
+
+/// IO 预取批次通道载荷：路径 + 读盘结果（错误按项携带，不中断整批）
+type IoBatch = Vec<(PathBuf, Result<Vec<u8>, ErrorCode>)>;
+
+/// IO 预取生产者：按（字节数 ≤ batch_budget 且条数 ≤ chunk_size）分批整读入内存，
+/// 经有界通道（容量 1）交给主循环；abort 置位即停。单文件读失败按 Failed 结果传递。
+fn produce_batches(
+    files: &[PathBuf],
+    batch_budget: u64,
+    max_items: usize,
+    abort_flag: &std::sync::atomic::AtomicBool,
+    engine: &Arc<ImportEngine>,
+    tx: &std::sync::mpsc::SyncSender<IoBatch>,
+) {
+    let mut batch: Vec<(PathBuf, Result<Vec<u8>, ErrorCode>)> = Vec::new();
+    let mut batch_bytes = 0u64;
+    for path in files {
+        if abort_flag.load(Ordering::SeqCst) {
+            break;
+        }
+        let read = std::fs::read(path).map_err(|_| ErrorCode::ReadFailed);
+        let size = read.as_ref().map_or(0, |b| b.len() as u64);
+        // 单文件超预算也独立成批（不无限膨胀内存）
+        let would_exceed = batch_bytes + size > batch_budget && !batch.is_empty();
+        if would_exceed || batch.len() >= max_items {
+            if tx.send(std::mem::take(&mut batch)).is_err() {
+                return; // 接收端已退出（abort/完成）
+            }
+            batch_bytes = 0;
+        }
+        batch_bytes += size;
+        batch.push((path.clone(), read));
+    }
+    if !batch.is_empty() && !abort_flag.load(Ordering::SeqCst) {
+        let _ = tx.send(batch);
+    }
+    // 静默结束：接收端从通道关闭（rx 迭代结束）感知完成
+    let _ = engine;
 }
 
 fn mtime_secs(path: &Path) -> Option<i64> {
@@ -543,6 +639,13 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_budget_stays_in_owner_bounds() {
+        // 裁定 22：clamp(总内存/8, 256MB, 1GB)
+        let b = adaptive_io_budget();
+        assert!((256 * 1024 * 1024..=1024 * 1024 * 1024).contains(&b));
+    }
+
+    #[test]
     fn scan_filters_extensions_and_hidden() {
         let (dir, src, _) = temp_workspace("scan");
         let src = src.clone();
@@ -619,6 +722,7 @@ mod tests {
             ImportConfig {
                 chunk_size: 1,
                 pause_after_done: 1,
+                io_budget_bytes: 0,
             },
         );
         engine.start(src.clone(), 1).unwrap();

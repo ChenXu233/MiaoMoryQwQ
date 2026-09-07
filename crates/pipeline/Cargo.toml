@@ -15,6 +15,7 @@ sha2 = "0.11"
 hex = "0.4"
 walkdir = "2"
 rayon = "1"
+sysinfo = { workspace = true }
 tracing = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }

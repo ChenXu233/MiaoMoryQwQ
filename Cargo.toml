@@ -9,6 +9,8 @@ authors = ["ChenXu233"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
+# 系统内存探测（导入 IO 预算自适应，v5 裁定 22）
+sysinfo = "0.33"
 serde_json = "1"
 thiserror = "2"
 # specta 系列版本必须与 tauri-specta 内部依赖严格一致（上游示例约定 =2.0.0-rc.x）
