@@ -62,7 +62,13 @@ fn decode_raster(bytes: &[u8], mime: &'static str) -> Result<DecodedPhoto, Error
 
     let (exif_meta, taken_at) = read_exif(&mut std::io::Cursor::new(bytes));
 
-    let reader = ImageReader::new(std::io::Cursor::new(bytes));
+    let mut reader = ImageReader::new(std::io::Cursor::new(bytes));
+    // 解码炸弹防护：单边 ≤16384px、解压分配 ≤512MB（超出报 DecodeFailed 走失败隔离）
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16384);
+    limits.max_image_height = Some(16384);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
     let mut decoder = reader
         .with_guessed_format()
         .map_err(|_| ErrorCode::DecodeFailed)?

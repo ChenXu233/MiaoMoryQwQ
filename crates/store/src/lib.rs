@@ -497,6 +497,15 @@ impl Store {
         dim: u32,
         now: i64,
     ) -> Result<(i64, bool)> {
+        // 输入校验：slug 限小写字母数字连字符（未来对外部输入开放时的注入/误配防线）
+        let slug_ok = !slug.is_empty()
+            && slug.len() <= 64
+            && slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !slug_ok || dim == 0 || dim > 4096 {
+            return Err(StoreError::Core(mm_core::ErrorCode::ModelMissing));
+        }
         let existing: Option<i64> = self
             .conn
             .query_row(
