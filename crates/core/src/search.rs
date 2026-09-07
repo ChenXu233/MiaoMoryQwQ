@@ -32,11 +32,23 @@ impl Matched {
 /// RRF：score = Σ 1/(k + rank)；rank 从 1 起。同流重复 id 取最优排名。
 /// 输入列表已按各自相关性降序排列。输出按 score 降序，同分按 id 升序（确定性）。
 pub fn rrf_fuse(semantic: &[AssetId], text: &[AssetId], k: f64) -> Vec<FusedHit> {
+    rrf_fuse_multi(&[semantic], text, k)
+}
+
+/// 多流 RRF（ADR-0013）：语义流可来自多套索引（每套一路），文本流一路。
+/// 语义流计数入 matched.semantic，文本流计入 text；both = 两类皆命中。
+pub fn rrf_fuse_multi(semantic_lists: &[&[AssetId]], text: &[AssetId], k: f64) -> Vec<FusedHit> {
     let k = if k <= 0.0 { 60.0 } else { k };
     let mut scores: std::collections::BTreeMap<AssetId, (f64, bool, bool)> =
         std::collections::BTreeMap::new();
 
-    for (is_semantic, list) in [(true, semantic), (false, text)] {
+    let mut all: Vec<(bool, &[AssetId])> = Vec::with_capacity(semantic_lists.len() + 1);
+    for list in semantic_lists {
+        all.push((true, list));
+    }
+    all.push((false, text));
+
+    for (is_semantic, list) in all {
         let mut seen_in_stream = std::collections::HashSet::new();
         for (idx, id) in list.iter().enumerate() {
             if !seen_in_stream.insert(*id) {

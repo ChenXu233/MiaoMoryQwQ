@@ -100,6 +100,20 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE assets_new RENAME TO assets;
     CREATE INDEX idx_assets_taken ON assets(taken_at DESC, asset_id DESC);
     CREATE INDEX idx_assets_folder ON assets(folder_id, taken_at DESC, asset_id DESC);",
+    // v5：可插拔索引注册表（ADR-0013）——每套索引一行；vec_table 指向各自的 vec0 表
+    // （维度可不同，新索引运行时建表）。种子复用 v2 的 vec_assets，零数据迁移。
+    "CREATE TABLE index_meta (
+        index_id INTEGER PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE,
+        display TEXT NOT NULL,
+        model TEXT NOT NULL,
+        dim INTEGER NOT NULL,
+        vec_table TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at INTEGER NOT NULL
+    );
+    INSERT INTO index_meta (index_id, slug, display, model, dim, vec_table, status, created_at)
+    VALUES (1, 'chinese-clip-vit-b16-int8', 'Chinese-CLIP ViT-B/16（int8）', 'chinese-clip-vit-b16', 512, 'vec_assets', 'active', 0);",
 ];
 
 /// 静态注册 sqlite-vec 扩展（对所有新连接生效）
@@ -147,6 +161,19 @@ pub struct NewAsset {
     pub size: Option<i64>,
     pub taken_at: i64,
     pub imported_at: i64,
+}
+
+/// 索引注册表行（ADR-0013）
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct IndexMetaRow {
+    pub index_id: i64,
+    pub slug: String,
+    pub display: String,
+    pub model: String,
+    pub dim: i64,
+    pub vec_table: String,
+    /// active | disabled
+    pub status: String,
 }
 
 /// 来源文件夹（工作区）行
@@ -371,7 +398,7 @@ impl Store {
                 Some(k) => {
                     self.conn
                         .execute("DELETE FROM assets WHERE asset_id=?1", params![id])?;
-                    let _ = self.delete_embedding(id);
+                    let _ = self.delete_asset_everywhere(id);
                     let _ = self
                         .conn
                         .execute("DELETE FROM fts_text WHERE asset_id = ?1", params![id]);
@@ -414,12 +441,117 @@ impl Store {
         )?)
     }
 
-    // ---- 向量检索（P2；迁移 v2 起）----
+    // ---- 向量检索（多索引，ADR-0013；vec 表名来自 index_meta，非用户输入）----
+
+    /// active 索引注册表
+    pub fn list_active_indexes(&self) -> Result<Vec<IndexMetaRow>> {
+        let sql = "SELECT index_id, slug, display, model, dim, vec_table, status
+                   FROM index_meta WHERE status = 'active' ORDER BY index_id";
+        let rows = self
+            .conn
+            .prepare(sql)?
+            .query_map([], |r| {
+                Ok(IndexMetaRow {
+                    index_id: r.get(0)?,
+                    slug: r.get(1)?,
+                    display: r.get(2)?,
+                    model: r.get(3)?,
+                    dim: r.get(4)?,
+                    vec_table: r.get(5)?,
+                    status: r.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 全部索引（含 disabled）
+    pub fn list_indexes(&self) -> Result<Vec<IndexMetaRow>> {
+        let sql = "SELECT index_id, slug, display, model, dim, vec_table, status
+                   FROM index_meta ORDER BY index_id";
+        let rows = self
+            .conn
+            .prepare(sql)?
+            .query_map([], |r| {
+                Ok(IndexMetaRow {
+                    index_id: r.get(0)?,
+                    slug: r.get(1)?,
+                    display: r.get(2)?,
+                    model: r.get(3)?,
+                    dim: r.get(4)?,
+                    vec_table: r.get(5)?,
+                    status: r.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 注册新索引（幂等，ADR-0013）：按 slug 查重；新建独立 vec0 表（维度随索引）。
+    /// 返回 (index_id, created)。
+    pub fn register_index(
+        &self,
+        slug: &str,
+        display: &str,
+        model: &str,
+        dim: u32,
+        now: i64,
+    ) -> Result<(i64, bool)> {
+        let existing: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT index_id FROM index_meta WHERE slug = ?1",
+                params![slug],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            return Ok((id, false));
+        }
+        let next: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(index_id), 0) + 1 FROM index_meta",
+            [],
+            |r| r.get(0),
+        )?;
+        let vec_table = format!("vec_i{next}");
+        self.conn.execute(
+            &format!(
+                "CREATE VIRTUAL TABLE \"{vec_table}\" USING vec0(
+                     asset_id INTEGER PRIMARY KEY,
+                     embedding float32[{dim}]
+                 )"
+            ),
+            [],
+        )?;
+        self.conn.execute(
+            "INSERT INTO index_meta (index_id, slug, display, model, dim, vec_table, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7)",
+            params![next, slug, display, model, dim, vec_table, now],
+        )?;
+        Ok((next, true))
+    }
+
+    /// vec0 表名（引号防护的标识符；表名只来自 index_meta，不接受用户输入）
+    fn vec_table(&self, index_id: i64) -> Result<String> {
+        let name: String = self
+            .conn
+            .query_row(
+                "SELECT vec_table FROM index_meta WHERE index_id = ?1",
+                params![index_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or(StoreError::InvalidCursor)?;
+        let q = char::from_u32(0x22).unwrap(); // 双引号
+        let escaped = name.replace(q, &q.to_string().repeat(2));
+        Ok(format!("{q}{escaped}{q}"))
+    }
 
     /// 写入/覆盖嵌入（vec0 无原地更新，走整行替换）；f32 按 blob 绑定
-    pub fn insert_embedding(&self, asset_id: i64, embedding: &[f32]) -> Result<()> {
+    pub fn insert_embedding(&self, index_id: i64, asset_id: i64, embedding: &[f32]) -> Result<()> {
+        let table = self.vec_table(index_id)?;
         self.conn.execute(
-            "DELETE FROM vec_assets WHERE asset_id = ?1",
+            &format!("DELETE FROM {table} WHERE asset_id = ?1"),
             params![asset_id],
         )?;
         let blob = unsafe {
@@ -429,31 +561,41 @@ impl Store {
             )
         };
         self.conn.execute(
-            "INSERT INTO vec_assets (asset_id, embedding) VALUES (?1, ?2)",
+            &format!("INSERT INTO {table} (asset_id, embedding) VALUES (?1, ?2)"),
             params![asset_id, blob],
         )?;
         Ok(())
     }
 
-    pub fn delete_embedding(&self, asset_id: i64) -> Result<()> {
+    pub fn delete_embedding(&self, index_id: i64, asset_id: i64) -> Result<()> {
+        let table = self.vec_table(index_id)?;
         self.conn.execute(
-            "DELETE FROM vec_assets WHERE asset_id = ?1",
+            &format!("DELETE FROM {table} WHERE asset_id = ?1"),
             params![asset_id],
         )?;
         Ok(())
     }
 
+    /// 删除资产在**所有**索引中的向量（delete_assets 级联用）
+    pub fn delete_asset_everywhere(&self, asset_id: i64) -> Result<()> {
+        for idx in self.list_indexes()? {
+            let _ = self.delete_embedding(idx.index_id, asset_id);
+        }
+        Ok(())
+    }
+
     /// KNN 检索：返回 (asset_id, distance)；f32 向量以 blob 绑定
-    pub fn knn_search(&self, query: &[f32], k: u32) -> Result<Vec<(i64, f32)>> {
+    pub fn knn_search(&self, index_id: i64, query: &[f32], k: u32) -> Result<Vec<(i64, f32)>> {
         let k = k.clamp(1, 1000);
+        let table = self.vec_table(index_id)?;
         let qblob: &[u8] = unsafe {
             std::slice::from_raw_parts(query.as_ptr().cast::<u8>(), std::mem::size_of_val(query))
         };
-        let sql = "SELECT asset_id, distance FROM vec_assets
-                   WHERE embedding MATCH ?1 AND k = ?2";
+        let sql =
+            format!("SELECT asset_id, distance FROM {table} WHERE embedding MATCH ?1 AND k = ?2");
         let rows = self
             .conn
-            .prepare(sql)?
+            .prepare(&sql)?
             .query_map(params![qblob, k], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, f32>(1)?))
             })?
@@ -461,36 +603,47 @@ impl Store {
         Ok(rows)
     }
 
-    /// 待嵌入的 ready 资产（嵌入管线取件）；**跳过离线/丢失文件夹**（索引需解码原图，源在线才有意义）。
+    /// 待嵌入的 ready 资产（按索引独立队列）；**跳过离线/丢失文件夹**（索引需解码原图，源在线才有意义）。
     /// 返回 (asset_id, year, sha256)——sha 供同内容跨工作区免重复推理
-    pub fn list_ready_without_embedding(&self, limit: u32) -> Result<Vec<(i64, String, String)>> {
-        let sql = "SELECT a.asset_id, a.year, a.sha256 FROM assets a
+    pub fn list_ready_without_embedding(
+        &self,
+        index_id: i64,
+        limit: u32,
+    ) -> Result<Vec<(i64, String, String)>> {
+        let table = self.vec_table(index_id)?;
+        let sql = format!(
+            "SELECT a.asset_id, a.year, a.sha256 FROM assets a
                    JOIN folders f ON f.folder_id = a.folder_id
                    WHERE a.status = 'ready'
                      AND f.status = 'online'
-                     AND a.asset_id NOT IN (SELECT asset_id FROM vec_assets)
-                   ORDER BY a.asset_id LIMIT ?1";
+                     AND a.asset_id NOT IN (SELECT asset_id FROM {table})
+                   ORDER BY a.asset_id LIMIT ?1"
+        );
         let rows = self
             .conn
-            .prepare(sql)?
+            .prepare(&sql)?
             .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
-    /// 同内容（同 sha256）的其他资产里，找一条已有向量的（跨工作区免重复推理）
+    /// 同内容（同 sha256）的其他资产里，找一条在该索引已有向量的（跨工作区免重复推理）
     pub fn find_embedding_source(
         &self,
+        index_id: i64,
         sha256: &str,
         exclude_asset_id: i64,
     ) -> Result<Option<i64>> {
+        let table = self.vec_table(index_id)?;
         Ok(self
             .conn
             .query_row(
-                "SELECT a.asset_id FROM assets a
-                 JOIN vec_assets v ON v.asset_id = a.asset_id
-                 WHERE a.sha256 = ?1 AND a.asset_id != ?2
-                 LIMIT 1",
+                &format!(
+                    "SELECT a.asset_id FROM assets a
+                     JOIN {table} v ON v.asset_id = a.asset_id
+                     WHERE a.sha256 = ?1 AND a.asset_id != ?2
+                     LIMIT 1"
+                ),
                 params![sha256, exclude_asset_id],
                 |r| r.get(0),
             )
@@ -498,11 +651,17 @@ impl Store {
     }
 
     /// 复制既有向量到同内容新资产（vec0 无原地更新，先删后插）
-    pub fn copy_embedding(&self, from_asset_id: i64, to_asset_id: i64) -> Result<bool> {
+    pub fn copy_embedding(
+        &self,
+        index_id: i64,
+        from_asset_id: i64,
+        to_asset_id: i64,
+    ) -> Result<bool> {
+        let table = self.vec_table(index_id)?;
         let blob: Option<Vec<u8>> = self
             .conn
             .query_row(
-                "SELECT embedding FROM vec_assets WHERE asset_id = ?1",
+                &format!("SELECT embedding FROM {table} WHERE asset_id = ?1"),
                 params![from_asset_id],
                 |r| r.get(0),
             )
@@ -511,26 +670,28 @@ impl Store {
             return Ok(false);
         };
         self.conn.execute(
-            "DELETE FROM vec_assets WHERE asset_id = ?1",
+            &format!("DELETE FROM {table} WHERE asset_id = ?1"),
             params![to_asset_id],
         )?;
         self.conn.execute(
-            "INSERT INTO vec_assets (asset_id, embedding) VALUES (?1, ?2)",
+            &format!("INSERT INTO {table} (asset_id, embedding) VALUES (?1, ?2)"),
             params![to_asset_id, blob],
         )?;
         Ok(true)
     }
 
-    /// 已嵌入数量
-    pub fn count_embedded(&self) -> Result<i64> {
+    /// 已嵌入数量（按索引）
+    pub fn count_embedded(&self, index_id: i64) -> Result<i64> {
+        let table = self.vec_table(index_id)?;
         Ok(self
             .conn
-            .query_row("SELECT COUNT(*) FROM vec_assets", [], |r| r.get(0))?)
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
     }
 
-    /// 清空全部嵌入（重建索引用）
-    pub fn clear_embeddings(&self) -> Result<()> {
-        self.conn.execute("DELETE FROM vec_assets", [])?;
+    /// 清空指定索引全部嵌入（重建索引用）
+    pub fn clear_embeddings(&self, index_id: i64) -> Result<()> {
+        let table = self.vec_table(index_id)?;
+        self.conn.execute(&format!("DELETE FROM {table}"), [])?;
         Ok(())
     }
 
@@ -617,7 +778,7 @@ impl Store {
     }
 
     /// 重新指定文件夹位置：更新 path 并把该工作区资产的 storage_key 前缀批量改写。
-    /// 返回改写的资产数。迁移占位 folder（path 为空）只改 label 语义路径，不改写历史 key。
+    /// 返回改写的资产数。迁移占位 folder（path 为空）不改写历史 key。
     pub fn relocate_folder(&self, folder_id: i64, new_path: &str) -> Result<usize> {
         let row = self
             .get_folder(folder_id)?
@@ -633,10 +794,10 @@ impl Store {
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             let mut n = 0;
             for (asset_id, key) in assets {
-                let new_key = match key.strip_prefix(&old_path) {
-                    Some(rest) => format!("{new_path}{rest}"),
-                    None => continue,
+                let Some(rest) = key.strip_prefix(&old_path) else {
+                    continue;
                 };
+                let new_key = format!("{new_path}{rest}");
                 self.conn.execute(
                     "UPDATE assets SET storage_key = ?2 WHERE asset_id = ?1",
                     params![asset_id, new_key],
@@ -906,22 +1067,22 @@ mod tests {
             .unwrap();
 
         let emb: Vec<f32> = (0..512).map(|i| ((i % 64) as f32 - 32.0) / 32.0).collect();
-        store.insert_embedding(id, &emb).unwrap();
-        assert_eq!(store.count_embedded().unwrap(), 1);
+        store.insert_embedding(1, id, &emb).unwrap();
+        assert_eq!(store.count_embedded(1).unwrap(), 1);
 
-        let hits = store.knn_search(&emb, 5).unwrap();
+        let hits = store.knn_search(1, &emb, 5).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0, id);
         // 距离为 0（自身）
         assert!(hits[0].1.abs() < 1e-4);
 
         // 重复插入 = 覆盖（vec0 无原地更新语义由上层保证）
-        store.insert_embedding(id, &emb).unwrap();
-        assert_eq!(store.count_embedded().unwrap(), 1);
+        store.insert_embedding(1, id, &emb).unwrap();
+        assert_eq!(store.count_embedded(1).unwrap(), 1);
 
         // 删除资产级联删除向量
         store.delete_assets(&[id]).unwrap();
-        assert_eq!(store.count_embedded().unwrap(), 0);
+        assert_eq!(store.count_embedded(1).unwrap(), 0);
     }
 
     #[test]
@@ -940,12 +1101,12 @@ mod tests {
                 .unwrap();
             ids.push(id);
         }
-        assert_eq!(store.list_ready_without_embedding(10).unwrap().len(), 3);
+        assert_eq!(store.list_ready_without_embedding(1, 10).unwrap().len(), 3);
         let emb: Vec<f32> = vec![0.0; 512];
-        store.insert_embedding(ids[0], &emb).unwrap();
-        assert_eq!(store.list_ready_without_embedding(10).unwrap().len(), 2);
-        store.clear_embeddings().unwrap();
-        assert_eq!(store.list_ready_without_embedding(10).unwrap().len(), 3);
+        store.insert_embedding(1, ids[0], &emb).unwrap();
+        assert_eq!(store.list_ready_without_embedding(1, 10).unwrap().len(), 2);
+        store.clear_embeddings(1).unwrap();
+        assert_eq!(store.list_ready_without_embedding(1, 10).unwrap().len(), 3);
     }
 
     #[test]
@@ -1002,6 +1163,38 @@ mod tests {
         assert_eq!(failed[0].error_code.as_deref(), Some("decode_failed"));
         assert_eq!(store.reset_failed().unwrap(), 1);
         assert!(store.list_failed().unwrap().is_empty());
+    }
+
+    #[test]
+    fn multi_index_registration_and_isolation() {
+        let store = Store::open_memory().unwrap();
+        let (idx2, created) = store
+            .register_index("test-model-a", "测试索引 A", "test-model", 8, 1_760_000_000)
+            .unwrap();
+        assert!(created);
+        assert_eq!(idx2, 2);
+        // 幂等
+        let (idx2b, created2) = store
+            .register_index("test-model-a", "测试索引 A", "test-model", 8, 1_760_000_000)
+            .unwrap();
+        assert!(!created2 && idx2b == 2);
+
+        let id = make_ready(&store, "mi", 1_700_000_000);
+        // 索引 1（512 维）与索引 2（8 维）互不串扰
+        let v512: Vec<f32> = vec![0.25; 512];
+        let v8: Vec<f32> = vec![0.5; 8];
+        store.insert_embedding(1, id, &v512).unwrap();
+        store.insert_embedding(2, id, &v8).unwrap();
+        assert_eq!(store.count_embedded(1).unwrap(), 1);
+        assert_eq!(store.count_embedded(2).unwrap(), 1);
+        assert_eq!(store.knn_search(2, &v8, 5).unwrap()[0].0, id);
+        // 待嵌入队列按索引独立判定
+        assert_eq!(store.list_ready_without_embedding(1, 10).unwrap().len(), 0);
+        assert_eq!(store.list_ready_without_embedding(2, 10).unwrap().len(), 0);
+        // 删除资产：所有索引的向量级联清除
+        store.delete_assets(&[id]).unwrap();
+        assert_eq!(store.count_embedded(1).unwrap(), 0);
+        assert_eq!(store.count_embedded(2).unwrap(), 0);
     }
 
     #[test]
@@ -1135,17 +1328,17 @@ mod tests {
 
         let id1 = make_ready_in(&store, f1, "cc", 1_700_000_000);
         let id2 = make_ready_in(&store, f2, "dd", 1_700_000_100);
-        let queue = store.list_ready_without_embedding(10).unwrap();
+        let queue = store.list_ready_without_embedding(1, 10).unwrap();
         assert_eq!(queue.len(), 1, "离线工作区的待嵌入资产被跳过");
         assert_eq!(queue[0].0, id1);
 
         // 在线区嵌入后，离线区同内容资产重上线时直接复制向量（免二次推理）
         let emb: Vec<f32> = vec![0.5; 512];
-        store.insert_embedding(id1, &emb).unwrap();
-        assert!(store.find_embedding_source("cc", id1).unwrap().is_none());
+        store.insert_embedding(1, id1, &emb).unwrap();
+        assert!(store.find_embedding_source(1, "cc", id1).unwrap().is_none());
         store.set_folder_status(f2, "online").unwrap();
         assert_eq!(
-            store.list_ready_without_embedding(10).unwrap().len(),
+            store.list_ready_without_embedding(1, 10).unwrap().len(),
             1,
             "dd 无同内容源，仍在队列"
         );
@@ -1158,12 +1351,12 @@ mod tests {
         store
             .mark_ready(id3, 1, 1, 1_700_000_200, "image/jpeg", None, "k")
             .unwrap();
-        let src = store.find_embedding_source("cc", id3).unwrap();
+        let src = store.find_embedding_source(1, "cc", id3).unwrap();
         assert_eq!(src, Some(id1));
-        assert!(store.copy_embedding(src.unwrap(), id3).unwrap());
-        assert_eq!(store.count_embedded().unwrap(), 2);
+        assert!(store.copy_embedding(1, src.unwrap(), id3).unwrap());
+        assert_eq!(store.count_embedded(1).unwrap(), 2);
         assert!(store
-            .list_ready_without_embedding(10)
+            .list_ready_without_embedding(1, 10)
             .unwrap()
             .iter()
             .all(|(id, _, _)| *id == id2));

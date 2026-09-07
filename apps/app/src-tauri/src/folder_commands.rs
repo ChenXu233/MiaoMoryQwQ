@@ -152,6 +152,21 @@ pub struct StorageUsage {
     pub models_bytes: f64,
     pub assets_count: i32,
     pub embedded_count: i32,
+    /// 各索引分项（裁定 25：占用分析到每一套索引）
+    pub per_index: Vec<IndexUsage>,
+}
+
+/// 单套索引的占用
+#[derive(Debug, Clone, Serialize, specta::Type)]
+pub struct IndexUsage {
+    pub index_id: i32,
+    pub slug: String,
+    pub display: String,
+    /// active | disabled
+    pub status: String,
+    pub count: i32,
+    /// 近似占用 = count × dim × 4（f32）
+    pub approx_bytes: f64,
 }
 
 #[tauri::command]
@@ -184,6 +199,22 @@ pub fn storage_usage(state: State<'_, AppState>) -> Result<StorageUsage, String>
             .map(|m| m.len() as f64)
             .unwrap_or(0.0)
     };
+    let per_index: Vec<IndexUsage> = store
+        .list_indexes()
+        .map_err(mode_err)?
+        .into_iter()
+        .map(|idx| {
+            let count = store.count_embedded(idx.index_id).unwrap_or(0);
+            IndexUsage {
+                index_id: i32::try_from(idx.index_id).unwrap_or(0),
+                slug: idx.slug,
+                display: idx.display,
+                status: idx.status,
+                count: i32::try_from(count).unwrap_or(0),
+                approx_bytes: (count * idx.dim * 4) as f64,
+            }
+        })
+        .collect();
     Ok(StorageUsage {
         db_bytes: std::fs::metadata(&db_path)
             .map(|m| m.len() as f64)
@@ -192,7 +223,12 @@ pub fn storage_usage(state: State<'_, AppState>) -> Result<StorageUsage, String>
         thumbs_bytes: dir_size(&state.workspace.thumbs_dir()),
         models_bytes: dir_size(&state.model_dir),
         assets_count: i32::try_from(store.count().map_err(mode_err)?).unwrap_or(0),
-        embedded_count: i32::try_from(store.count_embedded().map_err(mode_err)?).unwrap_or(0),
+        embedded_count: per_index
+            .iter()
+            .filter(|i| i.status == "active")
+            .map(|i| i.count)
+            .sum::<i32>(),
+        per_index,
     })
 }
 

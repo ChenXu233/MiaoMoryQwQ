@@ -1,11 +1,11 @@
 //! P2/P3 命令：模型状态/下载、混合检索（语义流 + 文本流 → RRF 融合）、重建索引。
 //! 规格 0003、0004、0005。
 
-use mm_core::search::rrf_fuse;
 use mm_store::Store;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::{AppHandle, State};
+use std::sync::Arc;
+use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event;
 
 use crate::events::{ModelDownloadProgressEvent, ModelReadyEvent};
@@ -29,7 +29,7 @@ pub fn model_status(state: State<'_, AppState>) -> ModelStatus {
     let missing = manifest.missing_files(&state.model_dir);
     ModelStatus {
         ready: missing.is_empty(),
-        loaded: state.embedder.get().is_some(),
+        loaded: state.has_loaded_indexer(),
         files_missing: missing,
     }
 }
@@ -44,7 +44,7 @@ static DOWNLOAD_IN_FLIGHT: std::sync::atomic::AtomicBool =
 #[specta::specta]
 pub fn download_models(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     use std::sync::atomic::Ordering;
-    if state.embedder.get().is_some() {
+    if state.has_loaded_indexer() {
         return Ok(()); // 已就绪，幂等
     }
     if DOWNLOAD_IN_FLIGHT
@@ -55,7 +55,7 @@ pub fn download_models(app: AppHandle, state: State<'_, AppState>) -> Result<(),
     }
     let endpoints = state.model_endpoints.clone();
     let model_dir = state.model_dir.clone();
-    let embedder_slot = state.embedder.clone();
+    let app_for_load = app.clone();
     let app2 = app.clone();
 
     std::thread::spawn(move || {
@@ -74,12 +74,15 @@ pub fn download_models(app: AppHandle, state: State<'_, AppState>) -> Result<(),
             DOWNLOAD_IN_FLIGHT.store(false, Ordering::SeqCst); // 允许手动重试
             return;
         }
-        match mm_embed::ClipEmbedder::load(&model_dir, &manifest) {
-            Ok(embedder) => {
-                let _ = embedder_slot.set(std::sync::Arc::new(embedder));
-                let _ = ModelReadyEvent {}.emit(&app2);
-            }
-            Err(_) => tracing::warn!("模型加载失败"),
+        // 索引装配统一走 state.load_indexers（ADR-0013）
+        let loaded = {
+            let st = app_for_load.state::<AppState>();
+            st.load_indexers()
+        };
+        if let Err(missing) = loaded {
+            tracing::warn!(?missing, "下载完成但索引装配失败");
+        } else {
+            let _ = ModelReadyEvent {}.emit(&app2);
         }
         DOWNLOAD_IN_FLIGHT.store(false, Ordering::SeqCst);
     });
@@ -119,9 +122,17 @@ pub async fn search_assets(
         pending_indexing: 0,
         available_years: Vec::new(),
     };
-    let Some(embedder) = state.embedder.get().cloned() else {
+    let indexers: Vec<Arc<dyn mm_core::Indexer>> = state
+        .indexers
+        .read()
+        .unwrap()
+        .iter()
+        .filter(|ix| ix.supports_text())
+        .cloned()
+        .collect();
+    if indexers.is_empty() {
         return Ok(empty(false));
-    };
+    }
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return Ok(empty(true));
@@ -162,28 +173,33 @@ pub async fn search_assets(
         true
     };
 
-    // ---- 语义流 ----
-    let qvec = embedder
-        .embed_text(trimmed)
-        .map_err(|c| c.slug().to_string())?;
+    // ---- 语义流（每套索引各一路，ADR-0013）----
     // 范围过滤在取回后做：KNN 多取 3 倍候选，保证过滤后仍有 k 条
     let knn_k = if filters.folder_id.is_some() {
         k.saturating_mul(3)
     } else {
         k
     };
-    let semantic_ids: Vec<i64> = store
-        .knn_search(&qvec, knn_k)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter_map(|(asset_id, _)| store.get_asset(asset_id).ok().flatten())
-        .filter(|row| passes_filters(row))
-        .map(|row| row.asset_id)
-        .collect();
+    let mut semantic_streams: Vec<Vec<u64>> = Vec::new();
+    for ix in &indexers {
+        let Ok(qvec) = ix.embed_text(trimmed) else {
+            continue;
+        };
+        let ids: Vec<u64> = store
+            .knn_search(ix.index_id(), &qvec, knn_k)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter_map(|(asset_id, _)| store.get_asset(asset_id).ok().flatten())
+            .filter(|row| passes_filters(row))
+            .map(|row| u64::try_from(row.asset_id).unwrap_or(0))
+            .collect();
+        semantic_streams.push(ids);
+    }
+    let semantic_refs: Vec<&[u64]> = semantic_streams.iter().map(|v| v.as_slice()).collect();
 
     // ---- 文本流（文件名；FTS 语法已由 build_match_query 清洗）----
     let match_query = Store::build_match_query(trimmed);
-    let text_ids: Vec<i64> = if match_query.is_empty() {
+    let text_ids: Vec<u64> = if match_query.is_empty() {
         Vec::new()
     } else {
         store
@@ -192,14 +208,12 @@ pub async fn search_assets(
             .into_iter()
             .filter_map(|asset_id| store.get_asset(asset_id).ok().flatten())
             .filter(|row| passes_filters(row))
-            .map(|row| row.asset_id)
+            .map(|row| u64::try_from(row.asset_id).unwrap_or(0))
             .collect()
     };
 
-    // ---- RRF 融合（k=60，白皮书 §4.6）----
-    let sem_ids: Vec<u64> = semantic_ids.iter().map(|i| *i as u64).collect();
-    let txt_ids: Vec<u64> = text_ids.iter().map(|i| *i as u64).collect();
-    let fused = rrf_fuse(&sem_ids, &txt_ids, 60.0);
+    // ---- 多流 RRF 融合（k=60，白皮书 §4.6 + ADR-0013）----
+    let fused = mm_core::search::rrf_fuse_multi(&semantic_refs, &text_ids, 60.0);
     let max_score = fused.first().map(|h| h.score).unwrap_or(1.0).max(1e-9);
 
     let items = fused
@@ -244,9 +258,18 @@ pub async fn search_assets(
         })
         .collect();
 
-    let pending = store
-        .list_ready_without_embedding(u32::MAX)
-        .map(|v| v.len() as i32)
+    let pending: i32 = store
+        .list_active_indexes()
+        .map(|idxs| {
+            idxs.iter()
+                .filter_map(|i| {
+                    store
+                        .list_ready_without_embedding(i.index_id, u32::MAX)
+                        .ok()
+                })
+                .map(|v| v.len() as i32)
+                .sum()
+        })
         .unwrap_or(0);
     let mut available_years: Vec<String> = Vec::new();
     for row in store.list_page(None, 500, None).unwrap_or_default() {
@@ -268,7 +291,14 @@ pub async fn search_assets(
 #[specta::specta]
 pub async fn reindex_all(state: State<'_, AppState>) -> Result<i32, String> {
     let store = store_at(&state)?;
-    let count = store.count_embedded().map_err(|e| e.to_string())?;
-    store.clear_embeddings().map_err(|e| e.to_string())?;
-    Ok(count as i32)
+    let mut total = 0i64;
+    for idx in store.list_active_indexes().map_err(|e| e.to_string())? {
+        total += store
+            .count_embedded(idx.index_id)
+            .map_err(|e| e.to_string())?;
+        store
+            .clear_embeddings(idx.index_id)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(total as i32)
 }

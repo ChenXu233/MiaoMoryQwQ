@@ -166,6 +166,18 @@ export type ImportResumedEvent = {
 	job_id: number,
 };
 
+/**  单套索引的占用 */
+export type IndexUsage = {
+	index_id: number,
+	slug: string,
+	display: string,
+	/**  active | disabled */
+	status: string,
+	count: number,
+	/**  近似占用 = count × dim × 4（f32） */
+	approx_bytes: number | null,
+};
+
 export type ModelDownloadProgressEvent = {
 	file: string,
 	received: number,
@@ -217,6 +229,8 @@ export type StorageUsage = {
 	models_bytes: number | null,
 	assets_count: number,
 	embedded_count: number,
+	/**  各索引分项（裁定 25：占用分析到每一套索引） */
+	per_index: IndexUsage[],
 };
 
 export type TimelinePage = {

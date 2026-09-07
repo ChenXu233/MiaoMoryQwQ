@@ -122,8 +122,20 @@ pub trait StorageAdapter {
     fn delete(&self, key: &str) -> Result<(), ErrorCode>;
 }
 
-/// 推理抽象：唯一实现为 `crates/embed`（P2，ONNX Runtime；中文图文检索需文本+图像两侧）
-pub trait Embedder: Send + Sync {
+/// 推理/索引抽象（ADR-0013 可插拔索引）：唯一内置实现为 `crates/embed`（Chinese-CLIP），
+/// 未来用户自带模型 / 第三方插件各实现一套。每套索引有稳定身份（index_id/slug），
+/// 数据库按 index_id 并存多套索引，检索时多流融合。
+pub trait Indexer: Send + Sync {
+    /// 对应 index_meta.index_id（注册表分配）
+    fn index_id(&self) -> i64;
+    /// 稳定标识（如 "chinese-clip-vit-b16-int8"）
+    fn slug(&self) -> &str;
+    /// UI 展示名
+    fn display(&self) -> &str;
+    /// 向量维度
+    fn dim(&self) -> u32;
+    /// 是否支持文本侧编码（纯图像索引返回 false，检索时跳过文本流）
+    fn supports_text(&self) -> bool;
     fn embed_images(&self, batch: &[DecodedImage]) -> Result<Vec<Vec<f32>>, ErrorCode>;
     fn embed_text(&self, text: &str) -> Result<Vec<f32>, ErrorCode>;
 }

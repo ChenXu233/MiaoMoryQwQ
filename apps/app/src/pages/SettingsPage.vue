@@ -311,6 +311,16 @@ onMounted(() => void loadStatic());
               <span class="pv num">{{ formatBytes(usage.models_bytes ?? 0) }}</span>
             </span>
           </div>
+          <div v-for="ix in usage.per_index" :key="ix.index_id" class="prow">
+            <span class="pinfo">
+              <span class="pl">
+                索引：{{ ix.display }}{{ ix.status !== "active" ? "（已停用）" : "" }}
+              </span>
+              <span class="pv num">
+                {{ ix.count }} 条 · {{ formatBytes(ix.approx_bytes ?? 0) }}
+              </span>
+            </span>
+          </div>
         </div>
       </div>
 

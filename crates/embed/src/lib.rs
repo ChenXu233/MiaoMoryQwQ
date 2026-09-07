@@ -13,7 +13,7 @@ pub mod tokenizer;
 use std::path::Path;
 use std::sync::Mutex;
 
-use mm_core::{DecodedImage, Embedder, ErrorCode};
+use mm_core::{DecodedImage, ErrorCode, Indexer};
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Tensor;
 
@@ -21,6 +21,10 @@ use crate::manifest::ModelManifest;
 use crate::tokenizer::BertTokenizer;
 
 pub struct ClipEmbedder {
+    /// 索引身份（ADR-0013）：对应 index_meta.index_id
+    index_id: i64,
+    slug: &'static str,
+    display: &'static str,
     visual: Mutex<Session>,
     text: Mutex<Session>,
     visual_input_name: String,
@@ -36,7 +40,12 @@ pub struct ClipEmbedder {
 const IMAGE_BATCH: usize = 8;
 
 impl ClipEmbedder {
-    pub fn load(model_dir: &Path, manifest: &ModelManifest) -> Result<Self, ErrorCode> {
+    /// `index_id` 来自 index_meta 注册表（内置 CLIP 索引由调用方传入）
+    pub fn load(
+        model_dir: &Path,
+        manifest: &ModelManifest,
+        index_id: i64,
+    ) -> Result<Self, ErrorCode> {
         let visual_bytes =
             std::fs::read(model_dir.join("visual.onnx")).map_err(|_| ErrorCode::ModelMissing)?;
         let text_bytes =
@@ -74,6 +83,9 @@ impl ClipEmbedder {
         );
 
         Ok(Self {
+            index_id,
+            slug: "chinese-clip-vit-b16-int8",
+            display: "Chinese-CLIP ViT-B/16（int8）",
             visual: Mutex::new(visual),
             text: Mutex::new(text),
             visual_input_name,
@@ -205,7 +217,22 @@ fn load_session(bytes: &[u8]) -> Result<Session, ErrorCode> {
         .map_err(|_| ErrorCode::ModelMissing)
 }
 
-impl Embedder for ClipEmbedder {
+impl Indexer for ClipEmbedder {
+    fn index_id(&self) -> i64 {
+        self.index_id
+    }
+    fn slug(&self) -> &str {
+        self.slug
+    }
+    fn display(&self) -> &str {
+        self.display
+    }
+    fn dim(&self) -> u32 {
+        self.embedding_dim as u32
+    }
+    fn supports_text(&self) -> bool {
+        true
+    }
     fn embed_images(&self, batch: &[DecodedImage]) -> Result<Vec<Vec<f32>>, ErrorCode> {
         ClipEmbedder::embed_images(self, batch)
     }

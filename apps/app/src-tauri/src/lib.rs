@@ -117,12 +117,12 @@ pub fn run() {
             // 模型已在本地则直接加载（重启后无需再下载）
             {
                 let state = app.state::<AppState>();
-                if let Err(missing) = state.load_embedder() {
+                if let Err(missing) = state.load_indexers() {
                     tracing::info!(?missing, "模型未就绪，语义搜索保持降级");
                 }
                 embed_worker::EmbedWorker::spawn(
                     state.workspace.db_path(),
-                    state.embedder.clone(),
+                    state.indexers.clone(),
                     app.handle().clone(),
                 );
             }

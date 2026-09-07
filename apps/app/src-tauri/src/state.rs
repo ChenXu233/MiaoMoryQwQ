@@ -24,8 +24,8 @@ pub struct AppState {
     pub model_dir: PathBuf,
     /// 分发源（依次尝试）：默认 GitHub Releases，可经 config.toml 整体替换
     pub model_endpoints: Vec<String>,
-    /// 已加载的嵌入模型（下载完成后由装配层填充）
-    pub embedder: Arc<std::sync::OnceLock<Arc<mm_embed::ClipEmbedder>>>,
+    /// 已加载的索引器集合（ADR-0013；下载完成后由装配层填充，可多套并存）
+    pub indexers: Arc<std::sync::RwLock<Vec<Arc<dyn mm_core::Indexer>>>>,
 }
 
 struct SystemClock;
@@ -59,23 +59,42 @@ impl AppState {
             sink,
             model_dir,
             model_endpoints,
-            embedder: Arc::new(std::sync::OnceLock::new()),
+            indexers: Arc::new(std::sync::RwLock::new(Vec::new())),
         }
     }
 
-    /// 尝试加载本地模型；返回缺失文件（空 = 就绪）
-    pub fn load_embedder(&self) -> Result<(), Vec<String>> {
+    /// 尝试加载索引模型（ADR-0013）：按 index_meta 注册表逐个装配，
+    /// 文件缺失的索引跳过（其队列等待下载完成后再装配）。返回缺失文件（空 = 全就绪）。
+    pub fn load_indexers(&self) -> Result<(), Vec<String>> {
         let manifest = mm_embed::manifest::manifest();
         let missing = manifest.missing_files(&self.model_dir);
         if !missing.is_empty() {
             return Err(missing);
         }
-        let embedder = mm_embed::ClipEmbedder::load(&self.model_dir, &manifest)
-            .map_err(|_| vec!["load_failed".to_string()])?;
-        self.embedder
-            .set(Arc::new(embedder))
-            .map_err(|_| vec!["already_loaded".to_string()])?;
+        let store = mm_store::Store::open(&self.workspace.db_path())
+            .map_err(|_| vec!["store_failed".to_string()])?;
+        let mut loaded = self.indexers.write().unwrap();
+        for meta in store
+            .list_active_indexes()
+            .map_err(|_| vec!["store_failed".to_string()])?
+        {
+            // 当前内置清单只覆盖 CLIP 索引；其余索引待其模型文件就绪后由未来注册流程装配
+            if meta.slug != "chinese-clip-vit-b16-int8"
+                || loaded.iter().any(|ix| ix.index_id() == meta.index_id)
+            {
+                continue;
+            }
+            match mm_embed::ClipEmbedder::load(&self.model_dir, &manifest, meta.index_id) {
+                Ok(ix) => loaded.push(Arc::new(ix)),
+                Err(_) => return Err(vec!["load_failed".to_string()]),
+            }
+        }
         Ok(())
+    }
+
+    /// 是否至少加载了一套索引
+    pub fn has_loaded_indexer(&self) -> bool {
+        !self.indexers.read().unwrap().is_empty()
     }
 }
 
