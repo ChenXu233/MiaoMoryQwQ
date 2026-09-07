@@ -201,6 +201,11 @@ pub struct SearchHit {
     pub score: f64,
     /// 命中来源：both / semantic / text（排序可解释，白皮书 §4.6）
     pub matched: String,
+    /// 结果元数据（UI 对齐 v6：文件名 / 大小 / 所属工作区）
+    pub file_name: String,
+    pub size_bytes: f64,
+    pub folder_id: i32,
+    pub folder_label: String,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]

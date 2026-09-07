@@ -209,6 +209,19 @@ pub async fn search_assets(
                 .get_asset(i64::try_from(hit.asset_id).unwrap_or(0))
                 .ok()
                 .flatten()?;
+            let folder_label = row
+                .folder_id
+                .try_into()
+                .ok()
+                .and_then(|fid: i32| store.get_folder(i64::from(fid)).ok().flatten())
+                .map(|f| f.label.unwrap_or(f.path))
+                .unwrap_or_default();
+            let file_name = row
+                .storage_key
+                .rsplit([char::from_u32(0x5C).unwrap(), '/'])
+                .next()
+                .unwrap_or("")
+                .to_string();
             Some(SearchHit {
                 summary: AssetSummary {
                     asset_id: i32::try_from(hit.asset_id).unwrap_or(0),
@@ -223,6 +236,10 @@ pub async fn search_assets(
                 },
                 score: (hit.score / max_score * 1000.0).round() / 1000.0,
                 matched: hit.matched.slug().to_string(),
+                file_name,
+                size_bytes: row.size.map(|s| s as f64).unwrap_or(0.0),
+                folder_id: i32::try_from(row.folder_id).unwrap_or(0),
+                folder_label,
             })
         })
         .collect();

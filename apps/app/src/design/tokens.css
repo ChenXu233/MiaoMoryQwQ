@@ -1,27 +1,61 @@
 /*
  * MiaoMory 颜色 token（ADR-0009）：语义命名，组件只允许引用这里的变量。
  * 亮色为默认；暗色经 document.documentElement.dataset.theme = "dark" 启用。
+ * v5 UI 对齐：新增玻璃拟态（柔和版）token——来源 ui-redesign-proto.html。
  */
 :root {
   --mm-bg: #fafaf9; /* 页面背景（stone-50） */
   --mm-surface: #ffffff; /* 卡片/浮层背景 */
+  --mm-surface-2: #f5f5f4; /* 次级表面（hover、内嵌块） */
   --mm-fg: #1c1917; /* 主文本（stone-900） */
   --mm-muted: #78716c; /* 次级文本（stone-500） */
   --mm-border: #e7e5e4; /* 描边（stone-200） */
   --mm-accent: #0f766e; /* 主操作色（teal-700） */
+  --mm-accent-2: #14b8a6; /* 主操作渐变副色（teal-500） */
+  --mm-accent-soft: rgba(15, 118, 110, 0.09); /* accent 软背景 */
   --mm-accent-fg: #ffffff; /* 主操作色上的文本 */
   --mm-danger: #b91c1c; /* 错误（red-700） */
   --mm-success: #15803d; /* 成功（green-700） */
+
+  /* 玻璃配方（柔和版：磨砂不是亚克力） */
+  --mm-glass: rgba(255, 255, 255, 0.6);
+  --mm-glass-strong: rgba(255, 255, 255, 0.76);
+  --mm-glass-border: rgba(255, 255, 255, 0.62);
+  --mm-glass-line: rgba(28, 25, 23, 0.07);
+  --mm-glass-hi: rgba(255, 255, 255, 0.6);
+  --mm-blur: 28px;
+  --mm-overlay: rgba(28, 25, 23, 0.4);
+  --mm-shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.05);
+  --mm-shadow-md:
+    0 10px 30px -10px rgba(28, 25, 23, 0.14), 0 2px 8px -2px rgba(28, 25, 23, 0.05);
+  --mm-shadow-lg:
+    0 24px 70px -18px rgba(28, 25, 23, 0.22), 0 8px 24px -12px rgba(28, 25, 23, 0.1);
+  --mm-sidebar-w: 214px;
 }
 
 [data-theme="dark"] {
   --mm-bg: #0c0a09;
   --mm-surface: #1c1917;
+  --mm-surface-2: #292524;
   --mm-fg: #fafaf9;
   --mm-muted: #a8a29e;
   --mm-border: #292524;
   --mm-accent: #2dd4bf;
+  --mm-accent-2: #5eead4;
+  --mm-accent-soft: rgba(45, 212, 191, 0.12);
   --mm-accent-fg: #042f2e;
   --mm-danger: #f87171;
   --mm-success: #4ade80;
+
+  --mm-glass: rgba(32, 29, 27, 0.58);
+  --mm-glass-strong: rgba(32, 29, 27, 0.76);
+  --mm-glass-border: rgba(255, 255, 255, 0.1);
+  --mm-glass-line: rgba(255, 255, 255, 0.06);
+  --mm-glass-hi: rgba(255, 255, 255, 0.08);
+  --mm-overlay: rgba(0, 0, 0, 0.5);
+  --mm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --mm-shadow-md:
+    0 10px 30px -10px rgba(0, 0, 0, 0.5), 0 2px 8px -2px rgba(0, 0, 0, 0.3);
+  --mm-shadow-lg:
+    0 24px 70px -18px rgba(0, 0, 0, 0.6), 0 8px 24px -12px rgba(0, 0, 0, 0.4);
 }
