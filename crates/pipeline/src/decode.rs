@@ -1,7 +1,6 @@
 //! 解码模块（ADR-0008 纯 Rust 栈）：JPEG/PNG/WebP 走 `image`，HEIC/HEIF 走 `libheif-rs`。
 //! EXIF：拍摄时间与方向（栅格图方向由 `image` 解码器应用；HEIC 由 libheif 解码时应用）。
 
-use std::io::BufReader;
 use std::path::Path;
 
 use mm_core::{DecodedImage, ErrorCode};
@@ -25,30 +24,35 @@ pub fn is_supported(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// 解码单张照片；统一产出 RGB8（`mm-core::DecodedImage`）
+/// 解码单张照片；统一产出 RGB8（`mm-core::DecodedImage`）。
+/// 保留给嵌入 worker（按路径解码原图）。
 pub fn decode_photo(path: &Path) -> Result<DecodedPhoto, ErrorCode> {
+    let bytes = std::fs::read(path).map_err(|_| ErrorCode::ReadFailed)?;
+    decode_photo_bytes(&bytes, path)
+}
+
+/// 从**已读入内存的字节**解码（导入管线：IO 预取线程整批读入，工作线程零盘 IO）
+pub fn decode_photo_bytes(bytes: &[u8], path: &Path) -> Result<DecodedPhoto, ErrorCode> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .ok_or(ErrorCode::DecodeFailed)?;
     match ext.as_str() {
-        "jpg" | "jpeg" => decode_raster(path, "image/jpeg"),
-        "png" => decode_raster(path, "image/png"),
-        "webp" => decode_raster(path, "image/webp"),
-        "heic" | "heif" => decode_heif(path),
+        "jpg" | "jpeg" => decode_raster(bytes, "image/jpeg"),
+        "png" => decode_raster(bytes, "image/png"),
+        "webp" => decode_raster(bytes, "image/webp"),
+        "heic" | "heif" => decode_heif(bytes),
         _ => Err(ErrorCode::DecodeFailed),
     }
 }
 
-fn decode_raster(path: &Path, mime: &'static str) -> Result<DecodedPhoto, ErrorCode> {
+fn decode_raster(bytes: &[u8], mime: &'static str) -> Result<DecodedPhoto, ErrorCode> {
     use image::{DynamicImage, ImageDecoder, ImageReader};
 
-    let file = std::fs::File::open(path).map_err(|_| ErrorCode::ReadFailed)?;
-    let exif_source = std::io::Cursor::new(std::fs::read(path).map_err(|_| ErrorCode::ReadFailed)?);
-    let (exif_meta, taken_at) = read_exif(&mut std::io::BufReader::new(exif_source));
+    let (exif_meta, taken_at) = read_exif(&mut std::io::Cursor::new(bytes));
 
-    let reader = ImageReader::new(BufReader::new(file));
+    let reader = ImageReader::new(std::io::Cursor::new(bytes));
     let mut decoder = reader
         .with_guessed_format()
         .map_err(|_| ErrorCode::DecodeFailed)?
@@ -75,13 +79,12 @@ fn decode_raster(path: &Path, mime: &'static str) -> Result<DecodedPhoto, ErrorC
     })
 }
 
-fn decode_heif(path: &Path) -> Result<DecodedPhoto, ErrorCode> {
+fn decode_heif(bytes: &[u8]) -> Result<DecodedPhoto, ErrorCode> {
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
 
-    let bytes = std::fs::read(path).map_err(|_| ErrorCode::ReadFailed)?;
     let lh = LibHeif::new();
     // libheif 解码时自动应用旋转/裁剪等几何变换（含 iPhone 方向）
-    let ctx = HeifContext::read_from_bytes(&bytes).map_err(|_| ErrorCode::DecodeFailed)?;
+    let ctx = HeifContext::read_from_bytes(bytes).map_err(|_| ErrorCode::DecodeFailed)?;
     let handle = ctx
         .primary_image_handle()
         .map_err(|_| ErrorCode::DecodeFailed)?;

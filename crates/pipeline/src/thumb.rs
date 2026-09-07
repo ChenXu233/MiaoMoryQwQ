@@ -1,14 +1,16 @@
-//! 缩略图生成：长边 512px，WebP 格式（白皮书 §3.6 统一 RGB 产出 → 缩略图）。
-//! 注：image 0.25 的 WebP 编码器仅支持无损；有损编码推迟到换绑定时评估（key 不变）。
+//! 缩略图生成：长边 384px，JPEG 有损 q80（v5 裁定：缩略图与照片强绑定不逐出，
+//! 体积是永久成本 → 有损小图；152px 网格与灯箱离线预览均够用）。
+//! 历史兼容：旧 .webp key 的存量缩略图照常显示（懒迁移——只有重新生成才写 .jpg）。
 
 use std::io::Cursor;
 
 use image::ImageBuffer;
 use mm_core::{DecodedImage, ErrorCode};
 
-pub const THUMB_MAX_EDGE: u32 = 512;
+pub const THUMB_MAX_EDGE: u32 = 384;
+const JPEG_QUALITY: u8 = 80;
 
-/// 生成缩略图，返回（WebP 字节、宽、高）
+/// 生成缩略图，返回（JPEG 字节、宽、高）
 pub fn make_thumbnail(photo: &DecodedImage) -> Result<(Vec<u8>, u32, u32), ErrorCode> {
     let src = ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(
         photo.width,
@@ -22,7 +24,7 @@ pub fn make_thumbnail(photo: &DecodedImage) -> Result<(Vec<u8>, u32, u32), Error
 
     let mut out = Vec::new();
     let mut cursor = Cursor::new(&mut out);
-    let encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut cursor);
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, JPEG_QUALITY);
     encoder
         .encode(&thumb.into_raw(), w, h, image::ExtendedColorType::Rgb8)
         .map_err(|_| ErrorCode::WriteFailed)?;
@@ -42,15 +44,16 @@ fn fit_within(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
     )
 }
 
-/// 缩略图存储 key：`{sha 前 2 位}/{sha}.webp`（二级目录避免单目录文件过多）
+/// 缩略图存储 key：`{sha 前 2 位}/{sha}.jpg`（二级目录避免单目录文件过多）。
+/// 存量行可能是 `.webp`（v5b 之前），以 DB thumb_key 为准、不迁移文件。
 pub fn thumb_key(sha256: &str) -> String {
     let (head, _) = sha256.split_at(2.min(sha256.len()));
-    format!("{head}/{sha256}.webp")
+    format!("{head}/{sha256}.jpg")
 }
 
 /// 编码格式嗅探（测试与降级判断用）
-pub fn is_webp(bytes: &[u8]) -> bool {
-    bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
+pub fn is_jpeg(bytes: &[u8]) -> bool {
+    bytes.len() > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8
 }
 
 #[cfg(test)]
@@ -72,13 +75,11 @@ mod tests {
     }
 
     #[test]
-    fn thumbnail_is_webp_within_512() {
+    fn thumbnail_is_jpeg_within_384() {
         let photo = gradient(2048, 1024);
         let (bytes, w, h) = make_thumbnail(&photo).unwrap();
-        assert_eq!((w, h), (512, 256));
-        assert_eq!(&bytes[0..4], b"RIFF"); // WebP 容器头
-        assert_eq!(&bytes[8..12], b"WEBP");
-        assert!(is_webp(&bytes));
+        assert_eq!((w, h), (384, 192));
+        assert!(is_jpeg(&bytes), "JPEG 魔数 FF D8");
     }
 
     #[test]
@@ -90,13 +91,21 @@ mod tests {
     }
 
     #[test]
-    fn thumb_key_shards_by_prefix() {
-        assert_eq!(thumb_key("abcdef"), "ab/abcdef.webp");
+    fn jpeg_is_smuch_smaller_than_lossless_budget() {
+        // 2048x1024 渐变：JPEG q80 输出应远小于无损 WebP（体积是永久成本，裁定 8）
+        let photo = gradient(1024, 512);
+        let (bytes, _, _) = make_thumbnail(&photo).unwrap();
+        assert!(bytes.len() < 300 * 1024, "实际 {} 字节", bytes.len());
+    }
+
+    #[test]
+    fn thumb_key_uses_jpg_extension() {
+        assert_eq!(thumb_key("abcdef"), "ab/abcdef.jpg");
     }
 
     #[test]
     fn fit_preserves_ratio() {
-        assert_eq!(fit_within(3000, 2000, 512), (512, 341));
-        assert_eq!(fit_within(50, 50, 512), (50, 50));
+        assert_eq!(fit_within(3000, 2000, 384), (384, 256));
+        assert_eq!(fit_within(50, 50, 384), (50, 50));
     }
 }
