@@ -49,3 +49,11 @@ pub struct EmbedProgressEvent {
     pub done: i32,
     pub total: i32,
 }
+
+/// 来源文件夹状态变化（online/offline/missing）→ 侧栏状态点与灯箱状态条刷新
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct FolderStatusChangedEvent {
+    pub folder_id: i32,
+    /// online | offline | missing
+    pub status: String,
+}

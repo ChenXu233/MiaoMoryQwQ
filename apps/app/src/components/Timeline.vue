@@ -87,7 +87,7 @@ async function loadMore(reset = false) {
   loading.value = true;
   loadError.value = false;
   try {
-    const res = await commands.listTimeline(reset ? null : cursor.value, PAGE_SIZE);
+    const res = await commands.listTimeline(reset ? null : cursor.value, PAGE_SIZE, null);
     if (res.status === "error") {
       loadError.value = true;
       return;

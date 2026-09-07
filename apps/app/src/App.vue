@@ -108,7 +108,7 @@ onMounted(async () => {
     phase.value = "browsing";
     return;
   }
-  const page = await commands.listTimeline(null, 1);
+  const page = await commands.listTimeline(null, 1, null);
   if (page.status === "ok" && page.data.groups.length > 0) {
     phase.value = "browsing";
   } else {
@@ -142,6 +142,7 @@ async function onSearch(query: string) {
           : null,
         taken_to: filterYear.value ? Number(filterYear.value) * 31_536_000 + 3.15e7 : null,
         kind: filterKind.value || null,
+        folder_id: null,
       },
     );
     if (res.status === "ok") {

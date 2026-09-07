@@ -95,8 +95,8 @@ impl ImportEngine {
         }
     }
 
-    /// 启动导入；已有任务在跑时返回 `ImportBusy`
-    pub fn start(self: &Arc<Self>, folder: PathBuf) -> Result<u64, ErrorCode> {
+    /// 启动导入；已有任务在跑时返回 `ImportBusy`。folder_id = 来源工作区（迁移 v4）
+    pub fn start(self: &Arc<Self>, folder: PathBuf, folder_id: i64) -> Result<u64, ErrorCode> {
         if !folder.is_dir() {
             return Err(ErrorCode::ReadFailed);
         }
@@ -121,7 +121,7 @@ impl ImportEngine {
         let engine = Arc::clone(self);
         std::thread::Builder::new()
             .name("mm-import".into())
-            .spawn(move || engine.run(files, job_id))
+            .spawn(move || engine.run(files, job_id, folder_id))
             .map_err(|_| ErrorCode::Unknown)?;
         Ok(job_id)
     }
@@ -191,7 +191,7 @@ impl ImportEngine {
         });
     }
 
-    fn run(self: Arc<Self>, files: Vec<PathBuf>, job_id: u64) {
+    fn run(self: Arc<Self>, files: Vec<PathBuf>, job_id: u64, folder_id: i64) {
         let started = Instant::now();
         let _ = &started;
         let store = match Store::open(&self.db_path) {
@@ -297,6 +297,7 @@ impl ImportEngine {
                         mark_item_failed(
                             &store,
                             &path,
+                            folder_id,
                             sha256.as_deref(),
                             code,
                             self.clock.now_unix(),
@@ -308,7 +309,7 @@ impl ImportEngine {
                     }
                     Outcome::Persist(p) => {
                         // 已就绪（同哈希）：幂等跳过，避免重复资产与缩略图
-                        match store.exists_ready(&p.sha256) {
+                        match store.exists_ready(folder_id, &p.sha256) {
                             Ok(true) => {
                                 job.done += 1;
                                 drop(state);
@@ -324,6 +325,7 @@ impl ImportEngine {
                         }
                         let key = thumb_key(&p.sha256);
                         let new_asset = NewAsset {
+                            folder_id,
                             sha256: p.sha256.clone(),
                             storage_key: p.path.to_string_lossy().into_owned(),
                             kind: mm_core::AssetKind::Photo,
@@ -415,6 +417,7 @@ fn mtime_secs(path: &Path) -> Option<i64> {
 fn mark_item_failed(
     store: &Store,
     path: &Path,
+    folder_id: i64,
     sha256: Option<&str>,
     code: ErrorCode,
     imported_at: i64,
@@ -423,6 +426,7 @@ fn mark_item_failed(
         .map(str::to_string)
         .unwrap_or_else(|| hash_file_sha256(format!("failed:{}", path.display()).as_bytes()));
     let new_asset = NewAsset {
+        folder_id,
         sha256: sha,
         storage_key: path.to_string_lossy().into_owned(),
         kind: mm_core::AssetKind::Photo,
@@ -583,7 +587,7 @@ mod tests {
             Arc::new(FakeSink(Arc::clone(&events))),
             ImportConfig::default(),
         );
-        engine.start(src.clone()).unwrap();
+        engine.start(src.clone(), 1).unwrap();
         assert!(wait_finished(&engine, Duration::from_secs(15)));
 
         let store = Store::open(&ws.join("index.db")).unwrap();
@@ -617,7 +621,7 @@ mod tests {
                 pause_after_done: 1,
             },
         );
-        engine.start(src.clone()).unwrap();
+        engine.start(src.clone(), 1).unwrap();
 
         // 等待自动暂停（done == 1 时触发 Paused 事件）
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -657,7 +661,7 @@ mod tests {
                 Arc::new(FakeSink(Default::default())),
                 ImportConfig::default()
             )
-            .start(src.parent().unwrap().join("nope"))
+            .start(src.parent().unwrap().join("nope"), 1)
             .unwrap_err(),
             ErrorCode::ReadFailed
         );

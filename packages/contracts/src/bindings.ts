@@ -16,7 +16,7 @@ export const commands = {
 	/**  当前任务快照（前端轮询兜底，事件丢失时恢复用） */
 	importSnapshot: () => typedError<ImportProgressEvent, string>(__TAURI_INVOKE("import_snapshot")),
 	/**  时间轴分页查询：按拍摄时间降序，前端按年分组展示 */
-	listTimeline: (cursor: string | null, pageSize: number | null) => typedError<TimelinePage, string>(__TAURI_INVOKE("list_timeline", { cursor, pageSize })),
+	listTimeline: (cursor: string | null, pageSize: number | null, folderId: number | null) => typedError<TimelinePage, string>(__TAURI_INVOKE("list_timeline", { cursor, pageSize, folderId })),
 	/**  原图绝对路径（asset protocol 读取；scope 在导入时放行） */
 	getAssetImage: (assetId: number) => typedError<string, string>(__TAURI_INVOKE("get_asset_image", { assetId })),
 	/**  批量删除记录与缩略图（永不触碰原文件） */
@@ -34,6 +34,8 @@ export const commands = {
 	taken_from: number | null,
 	taken_to: number | null,
 	kind: string | null,
+	/**  搜索范围（v8 裁定：跟随侧栏所选工作区；None=全部） */
+	folder_id: number | null,
 } | null) => typedError<SearchPage, string>(__TAURI_INVOKE("search_assets", { query, topK, filters })),
 	/**  重建全部向量索引（模型变更/量化策略变更时）；worker 轮询发现空队列后全量重嵌 */
 	reindexAll: () => typedError<number, string>(__TAURI_INVOKE("reindex_all")),
@@ -42,11 +44,21 @@ export const commands = {
 	openDataFolder: () => typedError<null, string>(__TAURI_INVOKE("open_data_folder")),
 	/**  更改数据位置：校验可写与嵌套关系后写入 config.data_dir，重启生效（规格 0006 §3.2） */
 	setDataLocation: (dir: string) => typedError<null, string>(__TAURI_INVOKE("set_data_location", { dir })),
+	listFolders: () => typedError<FolderInfo[], string>(__TAURI_INVOKE("list_folders")),
+	/**  主动重检：路径存在 → online，不存在 → missing；广播状态变化 */
+	recheckFolder: (folderId: number) => typedError<FolderInfo, string>(__TAURI_INVOKE("recheck_folder", { folderId })),
+	/**  重新指定丢失文件夹的新位置；该工作区资产的 storage_key 按新前缀批量改写 */
+	relocateFolder: (folderId: number, newPath: string) => typedError<FolderInfo, string>(__TAURI_INVOKE("relocate_folder", { folderId, newPath })),
+	/**  前端原图加载失败回调（被动检测）：该文件夹标记 offline 并广播（一次性提示由前端控制） */
+	reportOriginalMissing: (assetId: number) => typedError<null, string>(__TAURI_INVOKE("report_original_missing", { assetId })),
+	assetDetail: (assetId: number) => typedError<AssetDetail, string>(__TAURI_INVOKE("asset_detail", { assetId })),
+	storageUsage: () => typedError<StorageUsage, string>(__TAURI_INVOKE("storage_usage")),
 };
 
 /** Events */
 export const events = {
 	embedProgressEvent: makeEvent<EmbedProgressEvent>("embed-progress-event"),
+	folderStatusChangedEvent: makeEvent<FolderStatusChangedEvent>("folder-status-changed-event"),
 	importFinishedEvent: makeEvent<ImportFinishedEvent>("import-finished-event"),
 	importItemFailedEvent: makeEvent<ImportItemFailedEvent>("import-item-failed-event"),
 	importPausedEvent: makeEvent<ImportPausedEvent>("import-paused-event"),
@@ -57,6 +69,17 @@ export const events = {
 };
 
 /* Types */
+/**  灯箱角标数据：原图大小 + 来源文件夹状态（缩略图/原图标识，裁决 9） */
+export type AssetDetail = {
+	size_bytes: number | null,
+	mime: string | null,
+	folder_id: number,
+	folder_label: string | null,
+	folder_path: string,
+	/**  online | offline | missing */
+	folder_status: string,
+};
+
 export type AssetSummary = {
 	/**  IPC 契约用 i32/f64（specta 禁 i64 导出；内部仍是 i64，量级远不触及边界） */
 	asset_id: number,
@@ -97,6 +120,23 @@ export type FailedItem = {
 	asset_id: number,
 	path: string,
 	error_code: string | null,
+};
+
+/**  文件夹（工作区）快照 */
+export type FolderInfo = {
+	folder_id: number,
+	path: string,
+	label: string | null,
+	/**  online | offline | missing */
+	status: string,
+	asset_count: number,
+};
+
+/**  来源文件夹状态变化（online/offline/missing）→ 侧栏状态点与灯箱状态条刷新 */
+export type FolderStatusChangedEvent = {
+	folder_id: number,
+	/**  online | offline | missing */
+	status: string,
 };
 
 export type ImportFinishedEvent = {
@@ -145,6 +185,8 @@ export type SearchFilters = {
 	taken_from: number | null,
 	taken_to: number | null,
 	kind: string | null,
+	/**  搜索范围（v8 裁定：跟随侧栏所选工作区；None=全部） */
+	folder_id: number | null,
 };
 
 export type SearchHit = {
@@ -160,6 +202,16 @@ export type SearchPage = {
 	model_ready: boolean,
 	pending_indexing: number,
 	available_years: string[],
+};
+
+/**  存储占用分析（裁决 25：只展示，不做清理） */
+export type StorageUsage = {
+	db_bytes: number | null,
+	wal_bytes: number | null,
+	thumbs_bytes: number | null,
+	models_bytes: number | null,
+	assets_count: number,
+	embedded_count: number,
 };
 
 export type TimelinePage = {

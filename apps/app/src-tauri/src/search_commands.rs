@@ -92,6 +92,8 @@ pub struct SearchFilters {
     pub taken_from: Option<f64>,
     pub taken_to: Option<f64>,
     pub kind: Option<String>,
+    /// 搜索范围（v8 裁定：跟随侧栏所选工作区；None=全部）
+    pub folder_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -130,6 +132,11 @@ pub async fn search_assets(
     let filters = filters.unwrap_or_default();
 
     let passes_filters = |row: &mm_store::AssetRow| -> bool {
+        if let Some(fid) = filters.folder_id {
+            if row.folder_id != i64::from(fid) {
+                return false;
+            }
+        }
         if let Some(from) = filters.taken_from {
             if (row.taken_at as f64) < from {
                 return false;
@@ -159,8 +166,14 @@ pub async fn search_assets(
     let qvec = embedder
         .embed_text(trimmed)
         .map_err(|c| c.slug().to_string())?;
+    // 范围过滤在取回后做：KNN 多取 3 倍候选，保证过滤后仍有 k 条
+    let knn_k = if filters.folder_id.is_some() {
+        k.saturating_mul(3)
+    } else {
+        k
+    };
     let semantic_ids: Vec<i64> = store
-        .knn_search(&qvec, k)
+        .knn_search(&qvec, knn_k)
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter_map(|(asset_id, _)| store.get_asset(asset_id).ok().flatten())
@@ -219,7 +232,7 @@ pub async fn search_assets(
         .map(|v| v.len() as i32)
         .unwrap_or(0);
     let mut available_years: Vec<String> = Vec::new();
-    for row in store.list_page(None, 500).unwrap_or_default() {
+    for row in store.list_page(None, 500, None).unwrap_or_default() {
         if !available_years.contains(&row.year) {
             available_years.push(row.year.clone());
         }
