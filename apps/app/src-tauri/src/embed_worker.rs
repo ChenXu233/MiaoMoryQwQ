@@ -41,7 +41,12 @@ impl EmbedWorker {
 
                     let mut decoded: Vec<(i64, String, DecodedImage)> = Vec::new();
                     let mut skipped = 0u32;
-                    for (asset_id, year) in &pending {
+                    for (asset_id, year, sha256) in &pending {
+                        // 同内容已在其他工作区建过索引：直接复制向量，免二次解码推理
+                        if let Ok(Some(src)) = store.find_embedding_source(sha256, *asset_id) {
+                            let _ = store.copy_embedding(src, *asset_id);
+                            continue;
+                        }
                         let path = store
                             .get_asset(*asset_id)
                             .ok()

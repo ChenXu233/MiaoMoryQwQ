@@ -60,6 +60,46 @@ pub const MIGRATIONS: &[&str] = &[
     );",
     // v3：文本检索（文件名等；描述/OCR 后续扩展 content 结构）
     "CREATE VIRTUAL TABLE fts_text USING fts5(asset_id UNINDEXED, content, tokenize='trigram');",
+    // v4：来源文件夹（工作区）一等实体——assets 去全局哈希唯一，改 (folder_id, sha256) 联合唯一；
+    // 同一内容可进入多个工作区（各建资产记录，缩略图按 sha 内容寻址共享）。
+    // 存量资产回填到单条「早期导入」folder（path 未知 → missing，可重指或重导）。
+    "CREATE TABLE folders (
+        folder_id INTEGER PRIMARY KEY,
+        path      TEXT NOT NULL UNIQUE,
+        label     TEXT,
+        channel   TEXT NOT NULL DEFAULT 'local',
+        status    TEXT NOT NULL DEFAULT 'online',
+        added_at  INTEGER NOT NULL
+    );
+    INSERT INTO folders (folder_id, path, label, channel, status, added_at)
+    VALUES (1, '', '早期导入（迁移）', 'local', 'missing', 0);
+    CREATE TABLE assets_new (
+        asset_id  INTEGER PRIMARY KEY,
+        folder_id INTEGER NOT NULL,
+        sha256    TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
+        kind      TEXT NOT NULL,
+        size      INTEGER,
+        width     INTEGER,
+        height    INTEGER,
+        taken_at  INTEGER,
+        year      TEXT NOT NULL,
+        mime      TEXT,
+        exif      TEXT,
+        thumb_key TEXT,
+        status    TEXT NOT NULL DEFAULT 'pending',
+        error_code TEXT,
+        imported_at INTEGER NOT NULL,
+        UNIQUE(folder_id, sha256)
+    );
+    INSERT INTO assets_new
+        SELECT asset_id, 1, sha256, storage_key, kind, size, width, height,
+               taken_at, year, mime, exif, thumb_key, status, error_code, imported_at
+        FROM assets;
+    DROP TABLE assets;
+    ALTER TABLE assets_new RENAME TO assets;
+    CREATE INDEX idx_assets_taken ON assets(taken_at DESC, asset_id DESC);
+    CREATE INDEX idx_assets_folder ON assets(folder_id, taken_at DESC, asset_id DESC);",
 ];
 
 /// 静态注册 sqlite-vec 扩展（对所有新连接生效）
@@ -93,17 +133,33 @@ pub struct AssetRow {
     pub thumb_key: Option<String>,
     pub status: AssetStatus,
     pub error_code: Option<String>,
+    pub mime: Option<String>,
+    pub folder_id: i64,
 }
 
 /// 新资产待写记录（pipeline persist 阶段构造）
 #[derive(Debug, Clone)]
 pub struct NewAsset {
+    pub folder_id: i64,
     pub sha256: String,
     pub storage_key: String,
     pub kind: AssetKind,
     pub size: Option<i64>,
     pub taken_at: i64,
     pub imported_at: i64,
+}
+
+/// 来源文件夹（工作区）行
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FolderRow {
+    pub folder_id: i64,
+    pub path: String,
+    pub label: Option<String>,
+    pub channel: String,
+    /// online | offline | missing
+    pub status: String,
+    pub added_at: i64,
+    pub asset_count: i64,
 }
 
 /// 插入结果：`duplicated` = 库内已有同哈希（跨端去重，零重复向量化）
@@ -162,13 +218,14 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
 
-    /// 插入新资产（pending 态）；哈希命中即返回既有 id
+    /// 插入新资产（pending 态）；**同工作区**哈希命中即返回既有 id（跨工作区允许同内容共存）
     pub fn insert_pending(&self, new: &NewAsset) -> Result<InsertOutcome> {
         let inserted = self.conn.execute(
-            "INSERT INTO assets (sha256, storage_key, kind, taken_at, year, size, imported_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(sha256) DO NOTHING",
+            "INSERT INTO assets (folder_id, sha256, storage_key, kind, taken_at, year, size, imported_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(folder_id, sha256) DO NOTHING",
             params![
+                new.folder_id,
                 new.sha256,
                 new.storage_key,
                 kind_str(new.kind),
@@ -188,8 +245,8 @@ impl Store {
         let existing: Option<i64> = self
             .conn
             .query_row(
-                "SELECT asset_id FROM assets WHERE sha256 = ?1",
-                params![new.sha256],
+                "SELECT asset_id FROM assets WHERE folder_id = ?1 AND sha256 = ?2",
+                params![new.folder_id, new.sha256],
                 |r| r.get(0),
             )
             .optional()?;
@@ -239,13 +296,13 @@ impl Store {
         Ok(())
     }
 
-    /// 是否已有**就绪**资产（重试语义：pending/failed 行不算，允许重新处理）
-    pub fn exists_ready(&self, sha256: &str) -> Result<bool> {
+    /// 是否已有**就绪**资产（重试语义：pending/failed 行不算，允许重新处理）；工作区内判定
+    pub fn exists_ready(&self, folder_id: i64, sha256: &str) -> Result<bool> {
         Ok(self
             .conn
             .query_row(
-                "SELECT 1 FROM assets WHERE sha256 = ?1 AND status = 'ready'",
-                params![sha256],
+                "SELECT 1 FROM assets WHERE folder_id = ?1 AND sha256 = ?2 AND status = 'ready'",
+                params![folder_id, sha256],
                 |_| Ok(()),
             )
             .optional()?
@@ -258,13 +315,19 @@ impl Store {
             .query_row("SELECT COUNT(*) FROM assets", [], |r| r.get(0))?)
     }
 
-    /// 时间轴分页：taken_at 降序 keyset 游标（taken_at, asset_id）
-    pub fn list_page(&self, cursor: Option<(i64, i64)>, page_size: u32) -> Result<Vec<AssetRow>> {
+    /// 时间轴分页：taken_at 降序 keyset 游标（taken_at, asset_id）；folder_id 过滤可选（None=全部工作区）
+    pub fn list_page(
+        &self,
+        cursor: Option<(i64, i64)>,
+        page_size: u32,
+        folder_id: Option<i64>,
+    ) -> Result<Vec<AssetRow>> {
         let page_size = page_size.clamp(1, 500);
         let sql = "SELECT asset_id, sha256, storage_key, kind, size, width, height,
-                          taken_at, year, thumb_key, status, error_code
+                          taken_at, year, thumb_key, status, error_code, folder_id, mime
                    FROM assets
                    WHERE (?1 IS NULL OR taken_at < ?1 OR (taken_at = ?1 AND asset_id < ?2))
+                     AND (?4 IS NULL OR folder_id = ?4)
                    ORDER BY taken_at DESC, asset_id DESC
                    LIMIT ?3";
         let (cur_t, cur_id) = match cursor {
@@ -274,14 +337,14 @@ impl Store {
         let rows = self
             .conn
             .prepare(sql)?
-            .query_map(params![cur_t, cur_id, page_size], row_to_asset)?
+            .query_map(params![cur_t, cur_id, page_size, folder_id], row_to_asset)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
     pub fn get_asset(&self, asset_id: i64) -> Result<Option<AssetRow>> {
         let sql = "SELECT asset_id, sha256, storage_key, kind, size, width, height,
-                          taken_at, year, thumb_key, status, error_code
+                          taken_at, year, thumb_key, status, error_code, folder_id, mime
                    FROM assets WHERE asset_id = ?1";
         Ok(self
             .conn
@@ -289,7 +352,8 @@ impl Store {
             .optional()?)
     }
 
-    /// 批量删除；返回（删除数、未命中数）与被删资产的 thumb_key 列表（文件由调用方清理）
+    /// 批量删除；返回（删除数、未命中数）与不再被任何资产引用的 thumb_key 列表。
+    /// 缩略图按内容共享（跨工作区同哈希同 key）：仅引用归零时才交由调用方删文件。
     pub fn delete_assets(&self, ids: &[i64]) -> Result<(usize, usize, Vec<String>)> {
         let mut deleted = 0usize;
         let mut missing = 0usize;
@@ -313,7 +377,14 @@ impl Store {
                         .execute("DELETE FROM fts_text WHERE asset_id = ?1", params![id]);
                     deleted += 1;
                     if let Some(k) = k {
-                        thumb_keys.push(k);
+                        let refs: i64 = self.conn.query_row(
+                            "SELECT COUNT(*) FROM assets WHERE thumb_key=?1",
+                            params![k],
+                            |r| r.get(0),
+                        )?;
+                        if refs == 0 {
+                            thumb_keys.push(k);
+                        }
                     }
                 }
                 None => missing += 1,
@@ -325,7 +396,7 @@ impl Store {
     /// 失败清单（批次后供 UI 重试与展示）
     pub fn list_failed(&self) -> Result<Vec<AssetRow>> {
         let sql = "SELECT asset_id, sha256, storage_key, kind, size, width, height,
-                          taken_at, year, thumb_key, status, error_code
+                          taken_at, year, thumb_key, status, error_code, folder_id, mime
                    FROM assets WHERE status = 'failed' ORDER BY imported_at DESC";
         let rows = self
             .conn
@@ -390,18 +461,64 @@ impl Store {
         Ok(rows)
     }
 
-    /// 待嵌入的 ready 资产（嵌入管线取件）
-    pub fn list_ready_without_embedding(&self, limit: u32) -> Result<Vec<(i64, String)>> {
-        let sql = "SELECT a.asset_id, a.year FROM assets a
+    /// 待嵌入的 ready 资产（嵌入管线取件）；**跳过离线/丢失文件夹**（索引需解码原图，源在线才有意义）。
+    /// 返回 (asset_id, year, sha256)——sha 供同内容跨工作区免重复推理
+    pub fn list_ready_without_embedding(&self, limit: u32) -> Result<Vec<(i64, String, String)>> {
+        let sql = "SELECT a.asset_id, a.year, a.sha256 FROM assets a
+                   JOIN folders f ON f.folder_id = a.folder_id
                    WHERE a.status = 'ready'
+                     AND f.status = 'online'
                      AND a.asset_id NOT IN (SELECT asset_id FROM vec_assets)
                    ORDER BY a.asset_id LIMIT ?1";
         let rows = self
             .conn
             .prepare(sql)?
-            .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// 同内容（同 sha256）的其他资产里，找一条已有向量的（跨工作区免重复推理）
+    pub fn find_embedding_source(
+        &self,
+        sha256: &str,
+        exclude_asset_id: i64,
+    ) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT a.asset_id FROM assets a
+                 JOIN vec_assets v ON v.asset_id = a.asset_id
+                 WHERE a.sha256 = ?1 AND a.asset_id != ?2
+                 LIMIT 1",
+                params![sha256, exclude_asset_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// 复制既有向量到同内容新资产（vec0 无原地更新，先删后插）
+    pub fn copy_embedding(&self, from_asset_id: i64, to_asset_id: i64) -> Result<bool> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT embedding FROM vec_assets WHERE asset_id = ?1",
+                params![from_asset_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(blob) = blob else {
+            return Ok(false);
+        };
+        self.conn.execute(
+            "DELETE FROM vec_assets WHERE asset_id = ?1",
+            params![to_asset_id],
+        )?;
+        self.conn.execute(
+            "INSERT INTO vec_assets (asset_id, embedding) VALUES (?1, ?2)",
+            params![to_asset_id, blob],
+        )?;
+        Ok(true)
     }
 
     /// 已嵌入数量
@@ -415,6 +532,124 @@ impl Store {
     pub fn clear_embeddings(&self) -> Result<()> {
         self.conn.execute("DELETE FROM vec_assets", [])?;
         Ok(())
+    }
+
+    // ---- 来源文件夹 / 工作区（P5；迁移 v4 起）----
+
+    /// 取或建来源文件夹（导入入口幂等：同路径同一工作区）
+    pub fn get_or_create_folder(
+        &self,
+        path: &str,
+        label: Option<&str>,
+        now: i64,
+    ) -> Result<(i64, bool)> {
+        let existing: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT folder_id FROM folders WHERE path = ?1",
+                params![path],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            return Ok((id, false));
+        }
+        self.conn.execute(
+            "INSERT INTO folders (path, label, channel, status, added_at)
+             VALUES (?1, ?2, 'local', 'online', ?3)",
+            params![path, label, now],
+        )?;
+        Ok((self.conn.last_insert_rowid(), true))
+    }
+
+    pub fn list_folders(&self) -> Result<Vec<FolderRow>> {
+        let sql = "SELECT f.folder_id, f.path, f.label, f.channel, f.status, f.added_at,
+                          COUNT(a.asset_id) AS asset_count
+                   FROM folders f LEFT JOIN assets a ON a.folder_id = f.folder_id
+                   GROUP BY f.folder_id
+                   ORDER BY f.added_at ASC, f.folder_id ASC";
+        let rows = self
+            .conn
+            .prepare(sql)?
+            .query_map([], |r| {
+                Ok(FolderRow {
+                    folder_id: r.get(0)?,
+                    path: r.get(1)?,
+                    label: r.get(2)?,
+                    channel: r.get(3)?,
+                    status: r.get(4)?,
+                    added_at: r.get(5)?,
+                    asset_count: r.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn get_folder(&self, folder_id: i64) -> Result<Option<FolderRow>> {
+        Ok(self
+            .list_folders()?
+            .into_iter()
+            .find(|f| f.folder_id == folder_id))
+    }
+
+    /// 更新文件夹状态（online | offline | missing）
+    pub fn set_folder_status(&self, folder_id: i64, status: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE folders SET status = ?2 WHERE folder_id = ?1",
+            params![folder_id, status],
+        )?;
+        Ok(())
+    }
+
+    /// 重新检查文件夹可达性：路径存在 → online；不存在 → missing。返回新状态
+    pub fn recheck_folder(&self, folder_id: i64) -> Result<String> {
+        let row = self
+            .get_folder(folder_id)?
+            .ok_or(StoreError::InvalidCursor)?;
+        let status = if std::path::Path::new(&row.path).is_dir() {
+            "online"
+        } else {
+            "missing"
+        };
+        self.set_folder_status(folder_id, status)?;
+        Ok(status.to_string())
+    }
+
+    /// 重新指定文件夹位置：更新 path 并把该工作区资产的 storage_key 前缀批量改写。
+    /// 返回改写的资产数。迁移占位 folder（path 为空）只改 label 语义路径，不改写历史 key。
+    pub fn relocate_folder(&self, folder_id: i64, new_path: &str) -> Result<usize> {
+        let row = self
+            .get_folder(folder_id)?
+            .ok_or(StoreError::InvalidCursor)?;
+        let old_path = row.path.clone();
+        let rewritten = if old_path.is_empty() {
+            0
+        } else {
+            let assets: Vec<(i64, String)> = self
+                .conn
+                .prepare("SELECT asset_id, storage_key FROM assets WHERE folder_id = ?1")?
+                .query_map(params![folder_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let mut n = 0;
+            for (asset_id, key) in assets {
+                let new_key = match key.strip_prefix(&old_path) {
+                    Some(rest) => format!("{new_path}{rest}"),
+                    None => continue,
+                };
+                self.conn.execute(
+                    "UPDATE assets SET storage_key = ?2 WHERE asset_id = ?1",
+                    params![asset_id, new_key],
+                )?;
+                n += 1;
+            }
+            n
+        };
+        self.conn.execute(
+            "UPDATE folders SET path = ?2, status = 'online' WHERE folder_id = ?1",
+            params![folder_id, new_path],
+        )?;
+        Ok(rewritten)
     }
 
     // ---- 文本检索（P3；迁移 v3 起）----
@@ -480,6 +715,8 @@ fn row_to_asset(row: &Row<'_>) -> rusqlite::Result<AssetRow> {
             _ => AssetStatus::Pending,
         },
         error_code: row.get(11)?,
+        folder_id: row.get(12)?,
+        mime: row.get(13)?,
     })
 }
 
@@ -516,6 +753,7 @@ mod tests {
 
     fn new_asset(sha: &str, taken_at: i64) -> NewAsset {
         NewAsset {
+            folder_id: 1, // v4 迁移占位 folder「早期导入」
             sha256: sha.into(),
             storage_key: format!("photos/{sha}.jpg"),
             kind: AssetKind::Photo,
@@ -596,12 +834,12 @@ mod tests {
                 .mark_ready(id, 10, 10, t, "image/jpeg", None, "k")
                 .unwrap();
         }
-        let page1 = store.list_page(None, 4).unwrap();
+        let page1 = store.list_page(None, 4, None).unwrap();
         assert_eq!(page1.len(), 4);
         assert!(page1.windows(2).all(|w| w[0].taken_at >= w[1].taken_at));
         let last = page1.last().unwrap();
         let page2 = store
-            .list_page(Some((last.taken_at, last.asset_id)), 4)
+            .list_page(Some((last.taken_at, last.asset_id)), 4, None)
             .unwrap();
         // 无重复无遗漏
         assert!(!page2
@@ -614,6 +852,7 @@ mod tests {
                     page2.last().unwrap().asset_id,
                 )),
                 4,
+                None,
             )
             .unwrap();
         assert_eq!(page3.len(), 2);
@@ -643,15 +882,15 @@ mod tests {
             .insert_pending(&new_asset(sha, 1_700_000_000))
             .unwrap()
             .asset_id;
-        assert!(!store.exists_ready(sha).unwrap());
+        assert!(!store.exists_ready(1, sha).unwrap());
         store.mark_failed(id, "decode_failed").unwrap();
-        assert!(!store.exists_ready(sha).unwrap(), "failed 行允许重试");
+        assert!(!store.exists_ready(1, sha).unwrap(), "failed 行允许重试");
         store.reset_failed().unwrap();
-        assert!(!store.exists_ready(sha).unwrap(), "pending 行允许重试");
+        assert!(!store.exists_ready(1, sha).unwrap(), "pending 行允许重试");
         store
             .mark_ready(id, 1, 1, 1_700_000_000, "image/jpeg", None, "k")
             .unwrap();
-        assert!(store.exists_ready(sha).unwrap());
+        assert!(store.exists_ready(1, sha).unwrap());
     }
 
     #[test]
@@ -688,6 +927,8 @@ mod tests {
     #[test]
     fn pending_embedding_queue_and_clear() {
         let store = Store::open_memory().unwrap();
+        // v4 起嵌入队列只取在线工作区；占位 folder 默认 missing，测试先置 online
+        store.set_folder_status(1, "online").unwrap();
         let mut ids = Vec::new();
         for i in 0..3 {
             let id = store
@@ -773,5 +1014,198 @@ mod tests {
         assert_eq!(year_of(1_700_000_000), "2023");
         // 1970-01-01 UTC = 0
         assert_eq!(year_of(0), "1970");
+    }
+
+    // ---- v4：文件夹 / 工作区 ----
+
+    fn make_ready(store: &Store, sha: &str, taken_at: i64) -> i64 {
+        let id = store
+            .insert_pending(&new_asset(sha, taken_at))
+            .unwrap()
+            .asset_id;
+        store
+            .mark_ready(id, 10, 10, taken_at, "image/jpeg", None, "kk")
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn migration_reaches_v4_with_backfill_folder() {
+        let store = Store::open_memory().unwrap();
+        assert!(store.user_version().unwrap() >= 4);
+        let folders = store.list_folders().unwrap();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].label.as_deref(), Some("早期导入（迁移）"));
+        assert_eq!(folders[0].status, "missing");
+    }
+
+    #[test]
+    fn same_content_allowed_across_folders_deduped_within() {
+        let store = Store::open_memory().unwrap();
+        let (f1, created) = store.get_or_create_folder("D:/a", None, 1).unwrap();
+        let (f2, created2) = store.get_or_create_folder("D:/b", None, 2).unwrap();
+        assert!(created && created2);
+        let mut n1 = new_asset("dup", 1_700_000_000);
+        n1.folder_id = f1;
+        let mut n2 = new_asset("dup", 1_700_000_000);
+        n2.folder_id = f2;
+        let r1 = store.insert_pending(&n1).unwrap();
+        let r2 = store.insert_pending(&n2).unwrap();
+        assert!(!r1.duplicated && !r2.duplicated);
+        assert_ne!(r1.asset_id, r2.asset_id, "跨工作区同内容 = 两条资产记录");
+        // 同工作区重复导入仍然去重
+        let r3 = store.insert_pending(&n1).unwrap();
+        assert!(r3.duplicated && r3.asset_id == r1.asset_id);
+        assert_eq!(store.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn exists_ready_is_folder_scoped() {
+        let store = Store::open_memory().unwrap();
+        let (f1, _) = store.get_or_create_folder("D:/a", None, 1).unwrap();
+        let (f2, _) = store.get_or_create_folder("D:/b", None, 2).unwrap();
+        let mut n = new_asset("sc", 1_700_000_000);
+        n.folder_id = f1;
+        let id = store.insert_pending(&n).unwrap().asset_id;
+        store
+            .mark_ready(id, 1, 1, 1_700_000_000, "image/jpeg", None, "k")
+            .unwrap();
+        assert!(store.exists_ready(f1, "sc").unwrap());
+        assert!(!store.exists_ready(f2, "sc").unwrap(), "其他工作区不受影响");
+    }
+
+    #[test]
+    fn list_page_filters_by_folder() {
+        let store = Store::open_memory().unwrap();
+        let (fa, _) = store.get_or_create_folder("D:/a", None, 1).unwrap();
+        let (fb, _) = store.get_or_create_folder("D:/b", None, 2).unwrap();
+        for (i, f) in [fa, fb, fa, fb].iter().enumerate() {
+            let mut n = new_asset(&format!("lf{i}"), 1_700_000_000 + i as i64 * 60);
+            n.folder_id = *f;
+            let id = store.insert_pending(&n).unwrap().asset_id;
+            store
+                .mark_ready(id, 1, 1, n.taken_at, "image/jpeg", None, "k")
+                .unwrap();
+        }
+        assert_eq!(store.list_page(None, 100, Some(fa)).unwrap().len(), 2);
+        assert_eq!(store.list_page(None, 100, Some(fb)).unwrap().len(), 2);
+        assert_eq!(store.list_page(None, 100, None).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn folder_status_machine_and_counts() {
+        let store = Store::open_memory().unwrap();
+        let (fid, _) = store.get_or_create_folder("D:/photos", None, 1).unwrap();
+        make_ready(&store, "fm", 1_700_000_000);
+        let mut n = new_asset("fm2", 1_700_000_100);
+        n.folder_id = fid;
+        n.storage_key = "D:/photos/2023/fm2.jpg".into();
+        let id = store.insert_pending(&n).unwrap().asset_id;
+        store
+            .mark_ready(id, 1, 1, n.taken_at, "image/jpeg", None, "k")
+            .unwrap();
+
+        // 被动标记离线
+        store.set_folder_status(fid, "offline").unwrap();
+        assert_eq!(store.get_folder(fid).unwrap().unwrap().status, "offline");
+        // 主动重检：本机不存在该路径 → missing
+        assert_eq!(store.recheck_folder(fid).unwrap(), "missing");
+        // 指向真实存在的临时目录 → online
+        let tmp = std::env::temp_dir().join(format!("mm-folder-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert_eq!(
+            store.relocate_folder(fid, &tmp.to_string_lossy()).unwrap(),
+            1,
+            "storage_key 按新前缀改写"
+        );
+        let row = store.get_folder(fid).unwrap().unwrap();
+        assert_eq!(row.status, "online");
+        assert_eq!(row.asset_count, 1);
+        let key = store.get_asset(id).unwrap().unwrap().storage_key;
+        assert!(key.starts_with(&tmp.to_string_lossy().to_string()));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn embed_queue_skips_offline_folders_and_copies_same_content() {
+        let store = Store::open_memory().unwrap();
+        let (f1, _) = store.get_or_create_folder("D:/on", None, 1).unwrap();
+        let (f2, _) = store.get_or_create_folder("D:/off", None, 2).unwrap();
+        store.set_folder_status(f2, "offline").unwrap();
+
+        let id1 = make_ready_in(&store, f1, "cc", 1_700_000_000);
+        let id2 = make_ready_in(&store, f2, "dd", 1_700_000_100);
+        let queue = store.list_ready_without_embedding(10).unwrap();
+        assert_eq!(queue.len(), 1, "离线工作区的待嵌入资产被跳过");
+        assert_eq!(queue[0].0, id1);
+
+        // 在线区嵌入后，离线区同内容资产重上线时直接复制向量（免二次推理）
+        let emb: Vec<f32> = vec![0.5; 512];
+        store.insert_embedding(id1, &emb).unwrap();
+        assert!(store.find_embedding_source("cc", id1).unwrap().is_none());
+        store.set_folder_status(f2, "online").unwrap();
+        assert_eq!(
+            store.list_ready_without_embedding(10).unwrap().len(),
+            1,
+            "dd 无同内容源，仍在队列"
+        );
+
+        // f2 里放一条与 cc 同内容的资产 → 队列可见但存在复制源
+        let mut n = new_asset("cc", 1_700_000_200);
+        n.folder_id = f2;
+        n.storage_key = "D:/off/cc.jpg".into();
+        let id3 = store.insert_pending(&n).unwrap().asset_id;
+        store
+            .mark_ready(id3, 1, 1, 1_700_000_200, "image/jpeg", None, "k")
+            .unwrap();
+        let src = store.find_embedding_source("cc", id3).unwrap();
+        assert_eq!(src, Some(id1));
+        assert!(store.copy_embedding(src.unwrap(), id3).unwrap());
+        assert_eq!(store.count_embedded().unwrap(), 2);
+        assert!(store
+            .list_ready_without_embedding(10)
+            .unwrap()
+            .iter()
+            .all(|(id, _, _)| *id == id2));
+        let _ = id2;
+    }
+
+    fn make_ready_in(store: &Store, folder_id: i64, sha: &str, taken_at: i64) -> i64 {
+        let mut n = new_asset(sha, taken_at);
+        n.folder_id = folder_id;
+        let id = store.insert_pending(&n).unwrap().asset_id;
+        store
+            .mark_ready(id, 1, 1, taken_at, "image/jpeg", None, "k")
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn delete_keeps_shared_thumbnail_until_last_reference() {
+        let store = Store::open_memory().unwrap();
+        let (fa, _) = store.get_or_create_folder("D:/a", None, 1).unwrap();
+        let (fb, _) = store.get_or_create_folder("D:/b", None, 2).unwrap();
+        let mut n1 = new_asset("share", 1_700_000_000);
+        n1.folder_id = fa;
+        n1.storage_key = "D:/a/share.jpg".into();
+        let id1 = store.insert_pending(&n1).unwrap().asset_id;
+        let mut n2 = new_asset("share", 1_700_000_000);
+        n2.folder_id = fb;
+        n2.storage_key = "D:/b/share.jpg".into();
+        let id2 = store.insert_pending(&n2).unwrap().asset_id;
+        store
+            .mark_ready(id1, 1, 1, 1_700_000_000, "image/jpeg", None, "ab/share.jpg")
+            .unwrap();
+        store
+            .mark_ready(id2, 1, 1, 1_700_000_000, "image/jpeg", None, "ab/share.jpg")
+            .unwrap();
+
+        // 删第一条：缩略图仍被第二条引用，不返回 key
+        let (deleted, _, keys) = store.delete_assets(&[id1]).unwrap();
+        assert_eq!(deleted, 1);
+        assert!(keys.is_empty());
+        // 删最后一条：引用归零，key 交出
+        let (_, _, keys) = store.delete_assets(&[id2]).unwrap();
+        assert_eq!(keys, vec!["ab/share.jpg".to_string()]);
     }
 }

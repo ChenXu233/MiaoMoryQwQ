@@ -14,7 +14,7 @@ use crate::state::{
     thumbs_abs_path, AppState, AssetSummary, DeleteReport, FailedItem, TimelinePage, YearGroup,
 };
 
-fn store_at(state: &AppState) -> Result<Store, ErrorCode> {
+pub fn store_at(state: &AppState) -> Result<Store, ErrorCode> {
     Store::open(&state.workspace.db_path()).map_err(ErrorCode::from)
 }
 
@@ -29,6 +29,7 @@ pub fn list_timeline(
     state: State<'_, AppState>,
     cursor: Option<String>,
     page_size: Option<u32>,
+    folder_id: Option<i32>,
 ) -> Result<TimelinePage, String> {
     let store = store_at(&state).map_err(err_code)?;
     let parsed = cursor.and_then(|c| {
@@ -38,7 +39,7 @@ pub fn list_timeline(
         Some((t, id))
     });
     let rows = store
-        .list_page(parsed, page_size.unwrap_or(200))
+        .list_page(parsed, page_size.unwrap_or(200), folder_id.map(i64::from))
         .map_err(err_code)?;
     let mut groups: Vec<YearGroup> = Vec::new();
     for r in &rows {
@@ -153,7 +154,26 @@ pub async fn import_folder(
         let _ = store.reset_failed();
     }
 
-    let job_id = state.engine.start(path).map_err(|c| c.slug().to_string())?;
+    // 来源工作区：同路径幂等复用同一 folder（迁移 v4）
+    let (folder_id, _) = {
+        let store = store_at(&state).map_err(err_code)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        store
+            .get_or_create_folder(
+                &folder,
+                path.file_name().map(|s| s.to_string_lossy()).as_deref(),
+                now,
+            )
+            .map_err(err_code)?
+    };
+
+    let job_id = state
+        .engine
+        .start(path, folder_id)
+        .map_err(|c| c.slug().to_string())?;
     state.sink.begin_job(job_id);
     // 立即同步一条初始进度（枚举完成），避免 UI 等 100ms 节流
     let snap = state.engine.snapshot();

@@ -7,6 +7,7 @@ mod commands;
 mod data_commands;
 mod embed_worker;
 mod events;
+mod folder_commands;
 mod search_commands;
 mod state;
 
@@ -14,8 +15,9 @@ use tauri::{Manager, Wry};
 use tauri_specta::{collect_commands, collect_events, Builder};
 
 use crate::events::{
-    EmbedProgressEvent, ImportFinishedEvent, ImportItemFailedEvent, ImportPausedEvent,
-    ImportProgressEvent, ImportResumedEvent, ModelDownloadProgressEvent, ModelReadyEvent,
+    EmbedProgressEvent, FolderStatusChangedEvent, ImportFinishedEvent, ImportItemFailedEvent,
+    ImportPausedEvent, ImportProgressEvent, ImportResumedEvent, ModelDownloadProgressEvent,
+    ModelReadyEvent,
 };
 use crate::state::AppState;
 
@@ -47,6 +49,12 @@ pub fn app_builder() -> Builder<Wry> {
             data_commands::data_info,
             data_commands::open_data_folder,
             data_commands::set_data_location,
+            folder_commands::list_folders,
+            folder_commands::recheck_folder,
+            folder_commands::relocate_folder,
+            folder_commands::report_original_missing,
+            folder_commands::asset_detail,
+            folder_commands::storage_usage,
         ])
         .events(collect_events![
             ImportProgressEvent,
@@ -57,6 +65,7 @@ pub fn app_builder() -> Builder<Wry> {
             ModelDownloadProgressEvent,
             ModelReadyEvent,
             EmbedProgressEvent,
+            FolderStatusChangedEvent,
         ])
 }
 

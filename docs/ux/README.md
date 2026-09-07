@@ -47,3 +47,7 @@
 ## 一次性验收记录
 
 统一记录在 `latency-budget.md` 的"实测记录"表；模型 / ORT / sqlite-vec / Tauri 大版本升级触发重验（ADR-0004）。
+
+## 全流程用户旅程
+
+`user-journey.md`：按"看到什么/能做什么/背后发生什么"如实描述当前每一屏（含缺陷 U1~U10），与 `developers/06-import-and-indexing.md` 的技术缺陷 D1~D8 一一对应；所有者纠错与打磨排期的基准文档。
