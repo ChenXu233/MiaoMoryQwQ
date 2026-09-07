@@ -122,7 +122,10 @@ async function remove() {
     });
     if (!ok) return;
     const res = await commands.deleteAssets([it.asset_id]);
-    if (res.status === "ok") close();
+    if (res.status === "ok") {
+      window.dispatchEvent(new CustomEvent("mm-library-changed"));
+      close();
+    }
   } finally {
     deleting.value = false;
   }

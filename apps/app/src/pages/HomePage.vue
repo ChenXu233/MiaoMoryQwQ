@@ -4,6 +4,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { AssetSummary } from "@miaomory/contracts";
 import { useSearch } from "../composables/useSearch";
+import { useModelStatus } from "../composables/useModelStatus";
 import { useFolders } from "../composables/useFolders";
 import { useWorkspaceSelection } from "../composables/useWorkspaceSelection";
 import { useLightbox } from "../composables/useLightbox";
@@ -12,6 +13,7 @@ import { assetSrc } from "../lib/ui";
 import PhotoTile from "../components/PhotoTile.vue";
 
 const search = useSearch();
+const model = useModelStatus();
 const { folders } = useFolders();
 const { selectedFolderId } = useWorkspaceSelection();
 const lightbox = useLightbox();
@@ -110,8 +112,11 @@ function badgeOf(matched: string): string {
             <span class="num" style="color: var(--mm-muted)">{{ search.elapsedLabel.value }}</span>
           </div>
 
-          <div v-if="search.searchError.value" class="sp-miss">
-            <p>{{ "语义搜索暂不可用" }}</p>
+          <div v-if="!model.modelReady.value" class="sp-miss">
+            <p>语义模型正在准备（下载/建索引中），稍等片刻再试。</p>
+          </div>
+          <div v-else-if="search.searchError.value" class="sp-miss">
+            <p>语义搜索暂不可用。</p>
           </div>
           <div v-else-if="hits.length === 0" class="sp-miss">
             <p>没有找到相关照片。试试更具体的词，比如「火锅」「雪山」。</p>

@@ -27,12 +27,22 @@ pub fn is_supported(path: &Path) -> bool {
 /// 解码单张照片；统一产出 RGB8（`mm-core::DecodedImage`）。
 /// 保留给嵌入 worker（按路径解码原图）。
 pub fn decode_photo(path: &Path) -> Result<DecodedPhoto, ErrorCode> {
+    // 嵌入管线入口（裁定 23：索引永远解码原图）——禁用内嵌缩略图快路径
     let bytes = std::fs::read(path).map_err(|_| ErrorCode::ReadFailed)?;
-    decode_photo_bytes(&bytes, path)
+    decode_photo_bytes_ex(&bytes, path, false)
 }
 
 /// 从**已读入内存的字节**解码（导入管线：IO 预取线程整批读入，工作线程零盘 IO）
 pub fn decode_photo_bytes(bytes: &[u8], path: &Path) -> Result<DecodedPhoto, ErrorCode> {
+    // 导入管线入口：允许 HEIC 内嵌缩略图快路径（缩略图生成专用，decode-spike §1）
+    decode_photo_bytes_ex(bytes, path, true)
+}
+
+pub fn decode_photo_bytes_ex(
+    bytes: &[u8],
+    path: &Path,
+    allow_embedded_thumb: bool,
+) -> Result<DecodedPhoto, ErrorCode> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -42,7 +52,7 @@ pub fn decode_photo_bytes(bytes: &[u8], path: &Path) -> Result<DecodedPhoto, Err
         "jpg" | "jpeg" => decode_raster(bytes, "image/jpeg"),
         "png" => decode_raster(bytes, "image/png"),
         "webp" => decode_raster(bytes, "image/webp"),
-        "heic" | "heif" => decode_heif(bytes),
+        "heic" | "heif" => decode_heif(bytes, allow_embedded_thumb),
         _ => Err(ErrorCode::DecodeFailed),
     }
 }
@@ -79,7 +89,7 @@ fn decode_raster(bytes: &[u8], mime: &'static str) -> Result<DecodedPhoto, Error
     })
 }
 
-fn decode_heif(bytes: &[u8]) -> Result<DecodedPhoto, ErrorCode> {
+fn decode_heif(bytes: &[u8], allow_embedded_thumb: bool) -> Result<DecodedPhoto, ErrorCode> {
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
 
     let lh = LibHeif::new();
@@ -109,7 +119,7 @@ fn decode_heif(bytes: &[u8]) -> Result<DecodedPhoto, ErrorCode> {
     // 跳过 HEVC 全图解码；任一环节不满足则回退全图。快路径只服务缩略图生成，
     // 索引管线（裁定 23：索引永远解码原图）由嵌入 worker 独立调用本模块按路径全图解码。
     let mut thumb_handle = None;
-    if primary.number_of_thumbnails() > 0 {
+    if allow_embedded_thumb && primary.number_of_thumbnails() > 0 {
         let mut thumb_ids = [0u32; 1];
         if primary.thumbnail_ids(&mut thumb_ids) > 0 {
             if let Ok(thumb) = primary.thumbnail(thumb_ids[0]) {
