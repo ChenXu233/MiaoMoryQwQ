@@ -195,6 +195,11 @@ export type SearchHit = {
 	score: number | null,
 	/**  命中来源：both / semantic / text（排序可解释，白皮书 §4.6） */
 	matched: string,
+	/**  结果元数据（UI 对齐 v6：文件名 / 大小 / 所属工作区） */
+	file_name: string,
+	size_bytes: number | null,
+	folder_id: number,
+	folder_label: string,
 };
 
 export type SearchPage = {
