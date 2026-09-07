@@ -5,6 +5,7 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "./lib/router";
 import { useImportJob } from "./composables/useImportJob";
 import { useLightbox } from "./composables/useLightbox";
+import { useModelStatus } from "./composables/useModelStatus";
 import AppSidebar from "./components/shell/AppSidebar.vue";
 import BottomDock from "./components/shell/BottomDock.vue";
 import ImportCard from "./components/shell/ImportCard.vue";
@@ -17,6 +18,7 @@ import SettingsPage from "./pages/SettingsPage.vue";
 const route = useRoute();
 const importJob = useImportJob();
 const lightbox = useLightbox();
+useModelStatus(); // 单例：启动即检查模型并自动下载（规格 0004）
 const toastMsg = ref<string | null>(null);
 let toastTimer: number | undefined;
 

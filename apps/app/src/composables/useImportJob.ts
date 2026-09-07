@@ -41,6 +41,8 @@ export function useImportJob(onActivity?: () => void) {
           ? `导入完成，${e.payload.failed_count} 个文件无法读取`
           : "导入完成";
       window.setTimeout(() => (finishNotice.value = null), 6000);
+      // 广播库变更（任何时刻注册的监听者都能收到，规避单例回调注册时序问题）
+      window.dispatchEvent(new CustomEvent("mm-library-changed"));
       onActivity?.();
     });
   }

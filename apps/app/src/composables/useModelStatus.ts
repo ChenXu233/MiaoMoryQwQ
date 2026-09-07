@@ -24,6 +24,12 @@ export function useModelStatus() {
       void refresh();
     });
     void events.embedProgressEvent.listen(() => void refresh());
+    // 规格 0004 修订（PR #5）：启动发现模型缺失即自动后台下载，零点击
+    void refresh().then(() => {
+      if (!modelReady.value && downloading.value === null) {
+        void commands.downloadModels();
+      }
+    });
   }
   return { modelReady, modelFilesMissing, downloading, refresh, download: () => void commands.downloadModels() };
 }

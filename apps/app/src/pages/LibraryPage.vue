@@ -11,7 +11,7 @@ import { useLightbox } from "../composables/useLightbox";
 import PhotoTile from "../components/PhotoTile.vue";
 
 const library = useLibrary();
-const importJob = useImportJob(() => void library.reload());
+const importJob = useImportJob();
 const { folders } = useFolders();
 const { selectedFolderId, selectFolder } = useWorkspaceSelection();
 const lightbox = useLightbox();
@@ -21,9 +21,8 @@ const libView = ref<"timeline" | "wall">("timeline"); // v5 裁定：默认时�
 const allGroups = computed(() => library.groups.value);
 const isLoading = computed(() => library.loading.value);
 const isExhausted = computed(() => library.exhausted.value);
-const hasAnyPhoto = computed(
-  () => allGroups.value.some((g) => g.items.length > 0) || !isExhausted.value,
-);
+// 空库判定与工作区过滤无关：看全部文件夹的资产总数（过滤后无照片走 sp-empty 分支）
+const hasAnyPhoto = computed(() => folders.value.some((f) => f.asset_count > 0));
 const selectedFolder = computed(() =>
   folders.value.find((f) => String(f.folder_id) === selectedFolderId.value),
 );
@@ -33,10 +32,15 @@ const flatItems = computed<AssetSummary[]>(() =>
   allGroups.value.flatMap((g) => g.items),
 );
 
+const frameW = ref(0);
+function measure() {
+  frameW.value = window.innerWidth;
+}
+
 const wallCols = computed<AssetSummary[][]>(() => {
   const photos = flatItems.value;
-  const frameW = window.innerWidth - 214 - 32;
-  const k = Math.max(2, Math.floor((Math.max(340, frameW) + 6) / 158));
+  const avail = frameW.value - 214 - 32;
+  const k = Math.max(2, Math.floor((Math.max(340, avail) + 6) / 158));
   const cols: AssetSummary[][] = Array.from({ length: k }, () => []);
   photos.forEach((p, i) => cols[i % k].push(p));
   return cols;
@@ -52,19 +56,21 @@ function clearFolder() {
 }
 
 function onResize() {
-  // 触发 wallCols 重算（读取 window.innerWidth）
-  void frameW.value;
+  measure(); // 触发 wallCols 重算
 }
-const frameW = ref(0);
-function measure() {
-  frameW.value = window.innerWidth;
+function onLibraryChanged() {
+  void library.reload();
 }
 onMounted(() => {
   measure();
   window.addEventListener("resize", onResize);
+  window.addEventListener("mm-library-changed", onLibraryChanged);
   void library.reload();
 });
-onUnmounted(() => window.removeEventListener("resize", onResize));
+onUnmounted(() => {
+  window.removeEventListener("resize", onResize);
+  window.removeEventListener("mm-library-changed", onLibraryChanged);
+});
 </script>
 
 <template>
@@ -74,6 +80,10 @@ onUnmounted(() => window.removeEventListener("resize", onResize));
       <button class="empty-card" @click="importJob.pickFolder()">
         <div class="t">选择照片文件夹</div>
       </button>
+    </div>
+
+    <div v-else-if="allGroups.every((g) => g.items.length === 0)" class="sp-empty" style="padding-top: 80px">
+      该文件夹暂无照片
     </div>
 
     <div v-else>

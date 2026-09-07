@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 首页（UI 对齐 v6）：居中 logo + 大搜索框；回车提交 → 滑顶结果态；
 // 结果网格/列表带元数据（文件名/日期/文件夹/大小/命中徽标）；范围跟随侧栏选择（v8）。
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { AssetSummary } from "@miaomory/contracts";
 import { useSearch } from "../composables/useSearch";
 import { useFolders } from "../composables/useFolders";
@@ -42,6 +42,13 @@ function reset() {
   searched.value = false;
 }
 
+function onGlobalKey(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    inputEl.value?.focus();
+  }
+}
+
 function onKeydown(e: KeyboardEvent) {
   if (e.key === "Enter") commit();
   else if (e.key === "Escape") {
@@ -57,6 +64,9 @@ function openHit(item: AssetSummary) {
     Math.max(0, idx),
   );
 }
+
+onMounted(() => window.addEventListener("keydown", onGlobalKey));
+onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKey));
 
 function badgeOf(matched: string): string {
   return matched === "semantic" ? "语义" : matched === "text" ? "文件名" : "";

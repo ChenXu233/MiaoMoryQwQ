@@ -13,6 +13,8 @@ const current = ref<Route>(parse());
 
 window.addEventListener("hashchange", () => {
   current.value = parse();
+  // v9：路由切换自动收起窄屏抽屉
+  document.body.classList.remove("drawer");
 });
 
 export function useRoute() {

@@ -9,6 +9,7 @@ export function useFolders() {
   if (!started) {
     started = true;
     void events.folderStatusChangedEvent.listen(() => void load());
+    window.addEventListener("mm-library-changed", () => void load());
   }
   async function load() {
     const res = await commands.listFolders();

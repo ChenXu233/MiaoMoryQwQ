@@ -46,12 +46,26 @@ impl ClipEmbedder {
         manifest: &ModelManifest,
         index_id: i64,
     ) -> Result<Self, ErrorCode> {
-        let visual_bytes =
-            std::fs::read(model_dir.join("visual.onnx")).map_err(|_| ErrorCode::ModelMissing)?;
-        let text_bytes =
-            std::fs::read(model_dir.join("text.onnx")).map_err(|_| ErrorCode::ModelMissing)?;
+        // 文件名来自清单（如 visual.int8.onnx），不硬编码（量化/非量化命名不同）
+        let read_model_file = |keyword: &str| -> Result<Vec<u8>, ErrorCode> {
+            let name = manifest
+                .files
+                .iter()
+                .map(|f| &f.name)
+                .find(|n| n.contains(keyword))
+                .ok_or(ErrorCode::ModelMissing)?;
+            std::fs::read(model_dir.join(name)).map_err(|_| ErrorCode::ModelMissing)
+        };
+        let visual_bytes = read_model_file("visual")?;
+        let text_bytes = read_model_file("text")?;
+        let vocab_name = manifest
+            .files
+            .iter()
+            .map(|f| &f.name)
+            .find(|n| n.contains("vocab"))
+            .ok_or(ErrorCode::ModelMissing)?;
         let tokenizer = BertTokenizer::from_vocab(
-            &model_dir.join("vocab.txt"),
+            &model_dir.join(vocab_name),
             manifest.context_length.unwrap_or(52),
         )?;
 
