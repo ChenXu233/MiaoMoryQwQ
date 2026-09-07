@@ -85,15 +85,15 @@ fn decode_heif(bytes: &[u8]) -> Result<DecodedPhoto, ErrorCode> {
     let lh = LibHeif::new();
     // libheif 解码时自动应用旋转/裁剪等几何变换（含 iPhone 方向）
     let ctx = HeifContext::read_from_bytes(bytes).map_err(|_| ErrorCode::DecodeFailed)?;
-    let handle = ctx
+    let primary = ctx
         .primary_image_handle()
         .map_err(|_| ErrorCode::DecodeFailed)?;
 
     // HEIC 内嵌 EXIF（TIFF 块，去掉 "Exif\0\0" 前缀后可解析）
     let mut ids = [0u32; 1];
-    let exif_count = handle.metadata_block_ids(&mut ids, b"Exif");
+    let exif_count = primary.metadata_block_ids(&mut ids, b"Exif");
     let (taken_at, exif_json) = if exif_count > 0 {
-        match handle.metadata(ids[0]) {
+        match primary.metadata(ids[0]) {
             Ok(block) => {
                 let tiff = strip_exif_prefix(&block);
                 let (meta, taken) = read_exif(&mut std::io::Cursor::new(tiff));
@@ -105,8 +105,26 @@ fn decode_heif(bytes: &[u8]) -> Result<DecodedPhoto, ErrorCode> {
         (None, None)
     };
 
+    // 内嵌缩略图快路径（decode-spike §1）：文件自带 ≥384px 缩略图时直接解码它，
+    // 跳过 HEVC 全图解码；任一环节不满足则回退全图。快路径只服务缩略图生成，
+    // 索引管线（裁定 23：索引永远解码原图）由嵌入 worker 独立调用本模块按路径全图解码。
+    let mut thumb_handle = None;
+    if primary.number_of_thumbnails() > 0 {
+        let mut thumb_ids = [0u32; 1];
+        if primary.thumbnail_ids(&mut thumb_ids) > 0 {
+            if let Ok(thumb) = primary.thumbnail(thumb_ids[0]) {
+                let long = thumb.width().max(thumb.height());
+                if long >= crate::thumb::THUMB_MAX_EDGE {
+                    tracing::debug!(long, "HEIC 使用内嵌缩略图快路径");
+                    thumb_handle = Some(thumb);
+                }
+            }
+        }
+    }
+    let handle_for_decode = thumb_handle.as_ref().unwrap_or(&primary);
+
     let img = lh
-        .decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), None)
+        .decode(handle_for_decode, ColorSpace::Rgb(RgbChroma::Rgb), None)
         .map_err(|_| ErrorCode::DecodeFailed)?;
     let planes = img.planes();
     let plane = planes.interleaved.ok_or(ErrorCode::DecodeFailed)?;
