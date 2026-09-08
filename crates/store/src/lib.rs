@@ -517,27 +517,42 @@ impl Store {
         if let Some(id) = existing {
             return Ok((id, false));
         }
-        let next: i64 = self.conn.query_row(
-            "SELECT COALESCE(MAX(index_id), 0) + 1 FROM index_meta",
-            [],
-            |r| r.get(0),
-        )?;
-        let vec_table = format!("vec_i{next}");
-        self.conn.execute(
-            &format!(
-                "CREATE VIRTUAL TABLE \"{vec_table}\" USING vec0(
-                     asset_id INTEGER PRIMARY KEY,
-                     embedding float32[{dim}]
-                 )"
-            ),
-            [],
-        )?;
-        self.conn.execute(
-            "INSERT INTO index_meta (index_id, slug, display, model, dim, vec_table, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7)",
-            params![next, slug, display, model, dim, vec_table, now],
-        )?;
-        Ok((next, true))
+        // 建表与注册同事务（IMMEDIATE 先取写锁）：中断不留孤儿 vec 表，
+        // MAX+1 取号也在锁内，并发注册不会撞号
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let registered = (|| -> Result<i64> {
+            let next: i64 = self.conn.query_row(
+                "SELECT COALESCE(MAX(index_id), 0) + 1 FROM index_meta",
+                [],
+                |r| r.get(0),
+            )?;
+            let vec_table = format!("vec_i{next}");
+            self.conn.execute(
+                &format!(
+                    "CREATE VIRTUAL TABLE \"{vec_table}\" USING vec0(
+                         asset_id INTEGER PRIMARY KEY,
+                         embedding float32[{dim}]
+                     )"
+                ),
+                [],
+            )?;
+            self.conn.execute(
+                "INSERT INTO index_meta (index_id, slug, display, model, dim, vec_table, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7)",
+                params![next, slug, display, model, dim, vec_table, now],
+            )?;
+            Ok(next)
+        })();
+        match registered {
+            Ok(next) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok((next, true))
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     /// vec0 表名（引号防护的标识符；表名只来自 index_meta，不接受用户输入）
