@@ -185,9 +185,15 @@ pub async fn search_assets(
         let Ok(qvec) = ix.embed_text(trimmed) else {
             continue;
         };
-        let ids: Vec<u64> = store
-            .knn_search(ix.index_id(), &qvec, knn_k)
-            .map_err(|e| e.to_string())?
+        // 单索引故障只降级该路语义流，不拖垮整个搜索（与 embed_text 失败 continue 同策）
+        let hits = match store.knn_search(ix.index_id(), &qvec, knn_k) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(index_id = ix.index_id(), error = %e, "KNN 检索失败，跳过该索引");
+                continue;
+            }
+        };
+        let ids: Vec<u64> = hits
             .into_iter()
             .filter_map(|(asset_id, _)| store.get_asset(asset_id).ok().flatten())
             .filter(|row| passes_filters(row))

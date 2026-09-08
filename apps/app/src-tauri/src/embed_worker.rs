@@ -59,12 +59,20 @@ fn embed_queue_for(indexer: &dyn Indexer, db_path: &Path, app: &tauri::AppHandle
 
         let mut decoded: Vec<(i64, DecodedImage)> = Vec::new();
         let mut skipped = 0u32;
+        // 本轮真正写入/复制的向量数：零写入说明队列有"毒丸"（原图缺失等恒败项），
+        // 再转下去只会无 sleep 烧核 + 事件洪泛，还给后续索引让路
+        let mut written = 0usize;
         for (asset_id, _year, sha256) in &pending {
             // 同内容已在其他工作区建过索引：直接复制向量，免二次解码推理
             if let Ok(Some(src)) =
                 store.find_embedding_source(indexer.index_id(), sha256, *asset_id)
             {
-                let _ = store.copy_embedding(indexer.index_id(), src, *asset_id);
+                if matches!(
+                    store.copy_embedding(indexer.index_id(), src, *asset_id),
+                    Ok(true)
+                ) {
+                    written += 1;
+                }
                 continue;
             }
             let path = store
@@ -87,7 +95,12 @@ fn embed_queue_for(indexer: &dyn Indexer, db_path: &Path, app: &tauri::AppHandle
             let images: Vec<DecodedImage> = decoded.iter().map(|(_, img)| img.clone()).collect();
             if let Ok(vectors) = indexer.embed_images(&images) {
                 for ((asset_id, _), vec) in decoded.iter().zip(vectors) {
-                    let _ = store.insert_embedding(indexer.index_id(), *asset_id, &vec);
+                    if store
+                        .insert_embedding(indexer.index_id(), *asset_id, &vec)
+                        .is_ok()
+                    {
+                        written += 1;
+                    }
                 }
             }
         }
@@ -98,5 +111,11 @@ fn embed_queue_for(indexer: &dyn Indexer, db_path: &Path, app: &tauri::AppHandle
             total: ((done + i64::from(skipped)).max(done)) as i32,
         }
         .emit(app);
+
+        // 毒丸断路：pending 非空但本轮零写入 → 退出本轮清队列，交还外层 1.5s 节奏
+        // 自愈重试（原文件恢复/重检在线后自然续上），不再无 sleep 紧转
+        if written == 0 {
+            break;
+        }
     }
 }
