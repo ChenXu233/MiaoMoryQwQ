@@ -85,7 +85,11 @@ impl AppState {
                 continue;
             }
             match mm_embed::ClipEmbedder::load(&self.model_dir, &manifest, meta.index_id) {
-                Ok(ix) => loaded.push(Arc::new(ix)),
+                Ok(ix) => {
+                    // 成功也留痕：实机出现过「已就绪→未就绪」静默翻转且日志无据可查
+                    tracing::info!(index_id = meta.index_id, slug = %meta.slug, "索引装配成功");
+                    loaded.push(Arc::new(ix));
+                }
                 Err(_) => return Err(vec!["load_failed".to_string()]),
             }
         }

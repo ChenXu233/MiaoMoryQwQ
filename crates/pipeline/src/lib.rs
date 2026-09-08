@@ -430,7 +430,7 @@ impl ImportEngine {
                                 // 元数据就地提取，解码图在闭包末尾即释放（峰值 ≈ 1 张/工作线程）
                                 let (width, height) = (photo.width, photo.height);
                                 let t0 = Instant::now();
-                                let (thumb, _, _) = match make_thumbnail(&photo.image) {
+                                let (thumb, _, _) = match make_thumbnail(photo.image) {
                                     Ok(t) => t,
                                     Err(code) => {
                                         timings.thumb_ns.fetch_add(

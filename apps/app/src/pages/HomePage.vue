@@ -97,9 +97,10 @@ function badgeOf(matched: string): string {
           <span v-if="search.searching.value" class="st">搜索中…</span>
           <kbd>Enter</kbd>
         </div>
+      </div>
 
-        <!-- 结果区（回车后出现） -->
-        <div v-if="searched && search.results.value !== null" class="home-results">
+      <!-- 结果区（回车后出现）：放 hero 外层由 stage 居中，860px 面板不再溢出窗口右缘 -->
+      <div v-if="searched && search.results.value !== null" class="home-results">
           <div class="ph-head">
             <span>
               找到 <b class="num">{{ hits.length }}</b> 张与「<b>{{ search.query.value.trim() }}</b>」相关的照片
@@ -156,7 +157,6 @@ function badgeOf(matched: string): string {
               <span v-if="badgeOf(h.matched)" class="row-badge">{{ badgeOf(h.matched) }}</span>
             </button>
           </div>
-        </div>
       </div>
     </div>
   </div>

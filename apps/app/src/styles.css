@@ -600,8 +600,10 @@ body.rail .frame > .page {
   font-size: 14.5px;
 }
 .home-results {
-  width: min(860px, 92vw);
-  margin: 26px auto 0;
+  /* 100% = home-stage 内容宽（随侧栏/窗口收缩），860px 只是大屏上限——
+     之前固定 860px 塞在 680px hero 里会顶出窗口右缘（走查修复） */
+  width: min(860px, 100%);
+  margin-top: 26px;
   animation: fadeUp 0.35s ease both;
 }
 .res-grid {

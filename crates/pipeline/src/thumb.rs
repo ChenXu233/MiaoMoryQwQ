@@ -10,17 +10,17 @@ use mm_core::{DecodedImage, ErrorCode};
 pub const THUMB_MAX_EDGE: u32 = 384;
 const JPEG_QUALITY: u8 = 80;
 
-/// 生成缩略图，返回（JPEG 字节、宽、高）
-pub fn make_thumbnail(photo: &DecodedImage) -> Result<(Vec<u8>, u32, u32), ErrorCode> {
-    let src = ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(
-        photo.width,
-        photo.height,
-        photo.rgb.clone(),
-    )
-    .ok_or(ErrorCode::DecodeFailed)?;
+/// 生成缩略图，返回（JPEG 字节、宽、高）。
+/// 消费 `DecodedImage`（调用方在缩略图后不再用像素，免 36MB 级整缓冲克隆）；
+/// 大倍率缩小走 box 采样（`imageops::thumbnail`：每输出像素平均源矩形），
+/// 采样次数远少于通用采样 resize 的大支撑核，且高倍率下抗锯齿更稳。
+pub fn make_thumbnail(photo: DecodedImage) -> Result<(Vec<u8>, u32, u32), ErrorCode> {
+    let src =
+        ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(photo.width, photo.height, photo.rgb)
+            .ok_or(ErrorCode::DecodeFailed)?;
 
     let (w, h) = fit_within(photo.width, photo.height, THUMB_MAX_EDGE);
-    let thumb = image::imageops::resize(&src, w, h, image::imageops::FilterType::Triangle);
+    let thumb = image::imageops::thumbnail(&src, w, h);
 
     let mut out = Vec::new();
     let mut cursor = Cursor::new(&mut out);
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn thumbnail_is_jpeg_within_384() {
         let photo = gradient(2048, 1024);
-        let (bytes, w, h) = make_thumbnail(&photo).unwrap();
+        let (bytes, w, h) = make_thumbnail(photo).unwrap();
         assert_eq!((w, h), (384, 192));
         assert!(is_jpeg(&bytes), "JPEG 魔数 FF D8");
     }
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn small_images_are_not_upscaled() {
         let photo = gradient(100, 50);
-        let (bytes, w, h) = make_thumbnail(&photo).unwrap();
+        let (bytes, w, h) = make_thumbnail(photo).unwrap();
         assert_eq!((w, h), (100, 50));
         assert!(!bytes.is_empty());
     }
@@ -94,7 +94,7 @@ mod tests {
     fn jpeg_is_smuch_smaller_than_lossless_budget() {
         // 2048x1024 渐变：JPEG q80 输出应远小于无损 WebP（体积是永久成本，裁定 8）
         let photo = gradient(1024, 512);
-        let (bytes, _, _) = make_thumbnail(&photo).unwrap();
+        let (bytes, _, _) = make_thumbnail(photo).unwrap();
         assert!(bytes.len() < 300 * 1024, "实际 {} 字节", bytes.len());
     }
 

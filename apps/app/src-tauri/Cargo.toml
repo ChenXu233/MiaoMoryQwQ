@@ -37,6 +37,9 @@ mm-store = { path = "../../../crates/store" }
 mm-pipeline = { path = "../../../crates/pipeline" }
 mm-embed = { path = "../../../crates/embed" }
 
+[dev-dependencies]
+tracing-subscriber = "0.3"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
