@@ -5,7 +5,7 @@
 - 关联切片：P2（ADR-0007）
 - 关联体验规格：`docs/ux/0003-search.md`
 - 关联 ADR：ADR-0002、ADR-0006（基准推迟与临时选型见 ADR-0010）
-- 最后更新：2026-09-04
+- 最后更新：2026-09-08
 
 ## 1. 目标与非目标
 
@@ -20,9 +20,10 @@
 ## 3. 流程
 
 1. 前置：模型资产已下载到本地模型目录（见规格 0004）。
-2. 导入完成（或进行中）的 ready 资产批量嵌入：视觉编码 → L2 归一化 → INT8 量化 → 与 assets 同事务写入 `vec_assets`（v2 迁移，`year` 分区键）。
+2. 导入完成后的 ready 资产批量嵌入：视觉编码 → L2 归一化 → 量化 → 写入 `vec_assets`（v2 迁移）。
 3. 用户键入查询（防抖 150ms）→ 文本编码 → 归一化 → 量化 → sqlite-vec KNN（top 100，分区过滤可选）→ join `assets` → 返回快照（含相似度得分）。
-4. 批量嵌入随导入自动进行（persist 后异步补嵌）；也提供"全部重建索引"入口（模型变更/量化策略变更时）。
+4. 批量嵌入在导入任务结束后自动进行（错峰补嵌）；也提供"全部重建索引"入口（模型变更/量化策略变更时）。
+   - **错峰约定（2026-09-08 实测，待所有者追认）**：嵌入 worker 在导入进行期间必须空转等待（`ImportEngine::running`）。同盘并发双读流（导入预取 + 嵌入重读）在 USB 外置盘上实测产生约 10 倍读放大（30.6MB/s 单流顺序读 vs 2.9MB/s 并发），且嵌入解码与导入解码争抢 CPU。导入完成即自动开始清队列，检索进度经 `EmbedProgressEvent` 上报，UI 呈现"建立索引中"。
 5. 模型未就绪：搜索框可用但提交时显示降级提示（状态矩阵"离线"），不阻塞浏览。
 
 ## 4. 状态矩阵
@@ -45,7 +46,7 @@
 - 命令：`search_assets(query: String, top_k: Option<u32>) -> SearchPage { items: Vec<SearchHit>, model_ready: bool, pending_indexing: u64 }`；`SearchHit { summary: AssetSummary, score: f64 }`
 - 命令：`reindex_all() -> u64`（返回受影响资产数）；`model_status() -> ModelStatus { ready, files_missing: Vec<String> }`
 - 量化：归一化 f32 → INT8（×127 取整）；查询向量同样量化后走 `embedding MATCH` KNN
-- 嵌入随导入 pipeline persist 后补嵌；失败不阻塞导入（重试 = 重新导入或重建索引）
+- 嵌入在导入任务结束后由后台 worker 补嵌（错峰，见 §3.4）；失败不阻塞导入（重试 = 重新导入或重建索引）
 
 ## 6. 验收标准（Given / When / Then）
 

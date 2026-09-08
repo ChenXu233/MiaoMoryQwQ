@@ -123,8 +123,23 @@ pub fn run() {
                 embed_worker::EmbedWorker::spawn(
                     state.workspace.db_path(),
                     state.indexers.clone(),
+                    state.engine.clone(),
                     app.handle().clone(),
                 );
+            }
+
+            // 开发辅助（仅 debug 构建）：设置 MIAOMORY_DEV_AUTO_IMPORT=<目录> 则启动即导入，
+            // 走与 IPC 命令完全相同的装配路径，用于无 UI 的性能走查
+            #[cfg(debug_assertions)]
+            if let Some(folder) = std::env::var_os("MIAOMORY_DEV_AUTO_IMPORT") {
+                let state = app.state::<AppState>();
+                match crate::commands::start_import(app.handle(), &state, &folder.to_string_lossy())
+                {
+                    Ok(_) => tracing::info!(folder = %folder.to_string_lossy(), "dev 自动导入已启动"),
+                    Err(e) => {
+                        tracing::warn!(folder = %folder.to_string_lossy(), error = %e, "dev 自动导入失败")
+                    }
+                }
             }
 
             Ok(())

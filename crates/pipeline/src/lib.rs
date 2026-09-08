@@ -48,6 +48,18 @@ fn adaptive_io_budget() -> u64 {
     (total / 8).clamp(256 * 1024 * 1024, 1024 * 1024 * 1024)
 }
 
+/// 分段耗时累计（纳秒；跨线程原子累加，批次日志与完成摘要共用）
+#[derive(Default)]
+struct ImportTimings {
+    io_files: AtomicU64,
+    io_bytes: AtomicU64,
+    io_ns: AtomicU64,
+    hash_ns: AtomicU64,
+    decode_ns: AtomicU64,
+    thumb_ns: AtomicU64,
+    persist_ns: AtomicU64,
+}
+
 /// 任务快照（命令层返回给 UI）
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct JobSnapshot {
@@ -119,8 +131,14 @@ impl ImportEngine {
         }
         let job_id = self.next_job_id.fetch_add(1, Ordering::SeqCst);
         self.io_abort.store(false, Ordering::SeqCst);
+        let scan_t0 = Instant::now();
         let files = scan_folder(&folder).map_err(|_| ErrorCode::ReadFailed)?;
         let total = files.len() as u64;
+        tracing::info!(
+            count = total,
+            ms = scan_t0.elapsed().as_millis() as u64,
+            "目录扫描完成"
+        );
         state.job = Some(JobRuntime {
             job_id,
             total,
@@ -216,6 +234,7 @@ impl ImportEngine {
                 return;
             }
         };
+        let store_path = self.db_path.clone();
         let storage = LocalDiskAdapter::new(self.thumbs_dir.clone());
         let chunk_size = self.config.chunk_size.max(1);
         let mut pause_armed = self.config.pause_after_done > 0;
@@ -228,17 +247,23 @@ impl ImportEngine {
 
         // ---- IO 预取线程：整批读入内存（预算内），工作线程解码零盘 IO ----
         let batch_budget = (budget / 2).max(1);
-        let workers =
-            (budget / (96 * 1024 * 1024)).clamp(1, rayon::current_num_threads() as u64) as usize;
+        // 解码线程数留出余量（逻辑核 - 2）：导入属分钟级后台任务，保留 2 个逻辑核
+        // 给 UI/系统/读路径，避免解码打满全部核时界面与整机响应被拖垮
+        let core_cap = (rayon::current_num_threads() - 2).max(1) as u64;
+        let workers = (budget / (96 * 1024 * 1024))
+            .clamp(1, core_cap)
+            .clamp(1, rayon::current_num_threads() as u64) as usize;
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(workers)
             .build()
             .expect("构建导入工作池失败");
         let (tx, rx) = std::sync::mpsc::sync_channel::<IoBatch>(1);
+        let timings = Arc::new(ImportTimings::default());
         {
             let engine = Arc::clone(&self);
             let abort_flag = Arc::clone(&self.io_abort);
             let files_for_io = files.clone();
+            let timings_for_io = Arc::clone(&timings);
             std::thread::Builder::new()
                 .name("mm-import-io".into())
                 .spawn(move || {
@@ -249,6 +274,7 @@ impl ImportEngine {
                         &abort_flag,
                         &engine,
                         &tx,
+                        &timings_for_io,
                     );
                 })
                 .expect("启动 IO 预取线程失败");
@@ -293,57 +319,101 @@ impl ImportEngine {
                 thumb: Vec<u8>,
             }
 
-            // ---- CPU 并行：hash → decode → thumb（字节已在内存；查库不进并行段）----
+            // ---- CPU 并行：hash → 去重预检 → decode → thumb（查库不进并行段之外）----
             enum Outcome {
                 Persist(Prepared),
                 Failed(PathBuf, Option<String>, ErrorCode), // sha 在哈希前失败时为 None
+                /// 同哈希已就绪：幂等跳过（规格 0001 §3.3，免解码免缩略图）
+                AlreadyReady(PathBuf),
             }
 
+            let cpu_t0 = Instant::now();
             let outcomes: Vec<Outcome> = pool.install(|| {
                 batch
                     .par_iter()
-                    .map(|(path, bytes)| match bytes {
-                        Err(code) => Outcome::Failed(path.clone(), None, *code),
-                        Ok(bytes) => {
-                            let size = bytes.len() as u64;
-                            let mut hasher = Sha256::new();
-                            hasher.update(bytes);
-                            let sha256 = hex::encode(hasher.finalize());
+                    // 每线程一条短连接（WAL 多读安全），用于解码前的去重预检
+                    .map_init(
+                        || mm_store::Store::open(&store_path).ok(),
+                        |store, (path, bytes)| match bytes {
+                            Err(code) => Outcome::Failed(path.clone(), None, *code),
+                            Ok(bytes) => {
+                                let size = bytes.len() as u64;
+                                let t0 = Instant::now();
+                                let mut hasher = Sha256::new();
+                                hasher.update(bytes);
+                                let sha256 = hex::encode(hasher.finalize());
+                                timings
+                                    .hash_ns
+                                    .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                            let photo = match decode_photo_bytes(bytes, path) {
-                                Ok(p) => p,
-                                Err(code) => {
-                                    return Outcome::Failed(path.clone(), Some(sha256), code)
+                                // 去重预检（规格 0001 §3.3：hash 后命中 ready 即跳过，免解码）
+                                if let Some(store) = store {
+                                    if matches!(store.exists_ready(folder_id, &sha256), Ok(true)) {
+                                        return Outcome::AlreadyReady(path.clone());
+                                    }
                                 }
-                            };
-                            let taken_at = photo
-                                .taken_at
-                                .unwrap_or_else(|| mtime_secs(path).unwrap_or(0));
-                            // 元数据就地提取，全尺寸图在闭包末尾即释放（峰值 ≈ 1 张/工作线程）
-                            let (width, height) = (photo.image.width, photo.image.height);
-                            let (thumb, _, _) = match make_thumbnail(&photo.image) {
-                                Ok(t) => t,
-                                Err(code) => {
-                                    return Outcome::Failed(path.clone(), Some(sha256), code)
-                                }
-                            };
-                            Outcome::Persist(Prepared {
-                                path: path.clone(),
-                                sha256,
-                                size,
-                                width,
-                                height,
-                                mime: photo.mime,
-                                taken_at,
-                                exif_json: photo.exif_json,
-                                thumb,
-                            })
-                        }
-                    })
+
+                                let t0 = Instant::now();
+                                let photo = match decode_photo_bytes(bytes, path) {
+                                    Ok(p) => p,
+                                    Err(code) => {
+                                        timings.decode_ns.fetch_add(
+                                            t0.elapsed().as_nanos() as u64,
+                                            Ordering::Relaxed,
+                                        );
+                                        return Outcome::Failed(path.clone(), Some(sha256), code);
+                                    }
+                                };
+                                timings
+                                    .decode_ns
+                                    .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                                let taken_at = photo
+                                    .taken_at
+                                    .unwrap_or_else(|| mtime_secs(path).unwrap_or(0));
+                                // 元数据就地提取，全尺寸图在闭包末尾即释放（峰值 ≈ 1 张/工作线程）
+                                let (width, height) = (photo.image.width, photo.image.height);
+                                let t0 = Instant::now();
+                                let (thumb, _, _) = match make_thumbnail(&photo.image) {
+                                    Ok(t) => t,
+                                    Err(code) => {
+                                        timings.thumb_ns.fetch_add(
+                                            t0.elapsed().as_nanos() as u64,
+                                            Ordering::Relaxed,
+                                        );
+                                        return Outcome::Failed(path.clone(), Some(sha256), code);
+                                    }
+                                };
+                                timings
+                                    .thumb_ns
+                                    .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                                Outcome::Persist(Prepared {
+                                    path: path.clone(),
+                                    sha256,
+                                    size,
+                                    width,
+                                    height,
+                                    mime: photo.mime,
+                                    taken_at,
+                                    exif_json: photo.exif_json,
+                                    thumb,
+                                })
+                            }
+                        },
+                    )
                     .collect::<Vec<Outcome>>()
             });
+            tracing::info!(
+                files = batch.len(),
+                wall_ms = cpu_t0.elapsed().as_millis() as u64,
+                hash_ms = timings.hash_ns.load(Ordering::Relaxed) / 1_000_000,
+                decode_ms = timings.decode_ns.load(Ordering::Relaxed) / 1_000_000,
+                thumb_ms = timings.thumb_ns.load(Ordering::Relaxed) / 1_000_000,
+                "批次解码完成（hash/decode/thumb 为多线程累计值）"
+            );
 
             // ---- 串行持久化 ----
+            let persist_t0 = Instant::now();
+            let mut persisted = 0usize;
             for outcome in outcomes {
                 let mut state = self.state.lock().unwrap();
                 let job = state.job.as_mut().expect("job runtime present");
@@ -364,8 +434,13 @@ impl ImportEngine {
                             code,
                         });
                     }
+                    Outcome::AlreadyReady(_path) => {
+                        // 幂等跳过：与旧行为一致，不发独立事件（进度计数已含该项）
+                        job.done += 1;
+                    }
                     Outcome::Persist(p) => {
-                        // 已就绪（同哈希）：幂等跳过，避免重复资产与缩略图
+                        persisted += 1;
+                        // 持久化段再查一次：拦住同批内重复内容（预检时对方尚非 ready）
                         match store.exists_ready(folder_id, &p.sha256) {
                             Ok(true) => {
                                 job.done += 1;
@@ -445,7 +520,30 @@ impl ImportEngine {
                     failed,
                 });
             }
+            timings
+                .persist_ns
+                .fetch_add(persist_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            tracing::info!(
+                items = persisted,
+                ms = persist_t0.elapsed().as_millis() as u64,
+                "批次持久化完成（含缩略图落盘与 SQLite 写入）"
+            );
         }
+
+        let t = &timings;
+        let io_ns = t.io_ns.load(Ordering::Relaxed);
+        let total_bytes = t.io_bytes.load(Ordering::Relaxed);
+        tracing::info!(
+            total_ms = started.elapsed().as_millis() as u64,
+            files = t.io_files.load(Ordering::Relaxed),
+            read_mb = total_bytes / (1024 * 1024),
+            io_read_ms = io_ns / 1_000_000,
+            hash_ms = t.hash_ns.load(Ordering::Relaxed) / 1_000_000,
+            decode_ms = t.decode_ns.load(Ordering::Relaxed) / 1_000_000,
+            thumb_ms = t.thumb_ns.load(Ordering::Relaxed) / 1_000_000,
+            persist_ms = t.persist_ns.load(Ordering::Relaxed) / 1_000_000,
+            "导入完成分段时间统计"
+        );
 
         let failed = {
             let mut state = self.state.lock().unwrap();
@@ -463,8 +561,30 @@ impl ImportEngine {
 /// IO 预取批次通道载荷：路径 + 读盘结果（错误按项携带，不中断整批）
 type IoBatch = Vec<(PathBuf, Result<Vec<u8>, ErrorCode>)>;
 
+/// 整读一个文件；Windows 上带顺序扫描提示（预取按路径序整批读，更大预读窗口、
+/// 更少的 USB 小事务）。顺序读提示对流式整读是纯收益。
+#[cfg(windows)]
+fn read_file_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
+        .open(path)?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+#[cfg(not(windows))]
+fn read_file_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
+
 /// IO 预取生产者：按（字节数 ≤ batch_budget 且条数 ≤ chunk_size）分批整读入内存，
 /// 经有界通道（容量 1）交给主循环；abort 置位即停。单文件读失败按 Failed 结果传递。
+#[allow(clippy::too_many_arguments)]
 fn produce_batches(
     files: &[PathBuf],
     batch_budget: u64,
@@ -472,27 +592,54 @@ fn produce_batches(
     abort_flag: &std::sync::atomic::AtomicBool,
     engine: &Arc<ImportEngine>,
     tx: &std::sync::mpsc::SyncSender<IoBatch>,
+    timings: &ImportTimings,
 ) {
     let mut batch: Vec<(PathBuf, Result<Vec<u8>, ErrorCode>)> = Vec::new();
     let mut batch_bytes = 0u64;
+    let mut batch_t0 = Instant::now();
+    let mut max_file_ms = 0u64;
     for path in files {
         if abort_flag.load(Ordering::SeqCst) {
             break;
         }
-        let read = std::fs::read(path).map_err(|_| ErrorCode::ReadFailed);
+        let t0 = Instant::now();
+        let read = read_file_bytes(path).map_err(|_| ErrorCode::ReadFailed);
+        let file_ms = t0.elapsed().as_millis() as u64;
+        max_file_ms = max_file_ms.max(file_ms);
+        timings
+            .io_ns
+            .fetch_add(file_ms * 1_000_000, Ordering::Relaxed);
+        timings.io_files.fetch_add(1, Ordering::Relaxed);
         let size = read.as_ref().map_or(0, |b| b.len() as u64);
+        timings.io_bytes.fetch_add(size, Ordering::Relaxed);
         // 单文件超预算也独立成批（不无限膨胀内存）
         let would_exceed = batch_bytes + size > batch_budget && !batch.is_empty();
         if would_exceed || batch.len() >= max_items {
+            tracing::info!(
+                files = batch.len(),
+                mb = batch_bytes / (1024 * 1024),
+                ms = batch_t0.elapsed().as_millis() as u64,
+                max_file_ms,
+                "批次整读完成（IO 预取）"
+            );
             if tx.send(std::mem::take(&mut batch)).is_err() {
                 return; // 接收端已退出（abort/完成）
             }
             batch_bytes = 0;
+            batch_t0 = Instant::now();
+            max_file_ms = 0;
         }
         batch_bytes += size;
         batch.push((path.clone(), read));
     }
     if !batch.is_empty() && !abort_flag.load(Ordering::SeqCst) {
+        tracing::info!(
+            files = batch.len(),
+            mb = batch_bytes / (1024 * 1024),
+            ms = batch_t0.elapsed().as_millis() as u64,
+            max_file_ms,
+            "批次整读完成（IO 预取，末批）"
+        );
         let _ = tx.send(batch);
     }
     // 静默结束：接收端从通道关闭（rx 迭代结束）感知完成

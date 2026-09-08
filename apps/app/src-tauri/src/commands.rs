@@ -133,16 +133,10 @@ pub fn list_failed_items(state: State<'_, AppState>) -> Result<Vec<FailedItem>, 
         .collect())
 }
 
-/// 启动导入：选择文件夹 → 引擎后台跑（重试 = 对同一文件夹再导一次，哈希幂等）
-#[tauri::command]
-#[specta::specta]
-pub async fn import_folder(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    folder: String,
-) -> Result<i32, String> {
+/// 启动导入装配（IPC 命令与 dev 自动导入共用）：scope 放行、失败行复位、folder 幂等、引擎启动
+pub fn start_import(app: &AppHandle, state: &AppState, folder: &str) -> Result<i32, String> {
     use tauri::Manager;
-    let path = PathBuf::from(&folder);
+    let path = PathBuf::from(folder);
     if !path.is_dir() {
         return Err("read_failed".into());
     }
@@ -150,20 +144,20 @@ pub async fn import_folder(
     let _ = app.asset_protocol_scope().allow_directory(&path, true);
 
     // 重试语义：清掉 failed 行回 pending，随本次导入重新处理
-    if let Ok(store) = store_at(&state) {
+    if let Ok(store) = store_at(state) {
         let _ = store.reset_failed();
     }
 
     // 来源工作区：同路径幂等复用同一 folder（迁移 v4）
     let (folder_id, _) = {
-        let store = store_at(&state).map_err(err_code)?;
+        let store = store_at(state).map_err(err_code)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         store
             .get_or_create_folder(
-                &folder,
+                folder,
                 path.file_name().map(|s| s.to_string_lossy()).as_deref(),
                 now,
             )
@@ -184,9 +178,20 @@ pub async fn import_folder(
         failed: 0,
         eta_seconds: None,
     }
-    .emit(&app)
+    .emit(app)
     .ok();
     Ok(i32::try_from(job_id).unwrap_or(0))
+}
+
+/// 启动导入：选择文件夹 → 引擎后台跑（重试 = 对同一文件夹再导一次，哈希幂等）
+#[tauri::command]
+#[specta::specta]
+pub async fn import_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    folder: String,
+) -> Result<i32, String> {
+    start_import(&app, &state, &folder)
 }
 
 #[tauri::command]

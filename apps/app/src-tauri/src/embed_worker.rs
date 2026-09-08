@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use mm_core::{DecodedImage, Indexer};
+use mm_pipeline::ImportEngine;
 use mm_store::Store;
 use tauri_specta::Event;
 
@@ -18,12 +19,17 @@ impl EmbedWorker {
     pub fn spawn(
         db_path: PathBuf,
         indexers: Arc<RwLock<Vec<Arc<dyn Indexer>>>>,
+        engine: Arc<ImportEngine>,
         app: tauri::AppHandle,
     ) {
         std::thread::Builder::new()
             .name("mm-embed".into())
             .spawn(move || loop {
                 std::thread::sleep(Duration::from_millis(1500));
+                // 错峰：导入进行中不嵌（避免与导入预取在源盘/读路径上互相拖垮，实测 10 倍读放大）
+                if engine.snapshot().running {
+                    continue;
+                }
                 // 每个已加载索引独立清自己的队列（ADR-0013）
                 let loaded: Vec<Arc<dyn Indexer>> = indexers.read().unwrap().clone();
                 if loaded.is_empty() {
