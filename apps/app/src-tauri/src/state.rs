@@ -192,6 +192,28 @@ pub struct AssetSummary {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub taken_at: f64,
+    /// 语义索引是否已建立（全部 active 索引均有向量；false=网格显示建索引呼吸点）
+    pub indexed: bool,
+}
+
+/// 给一组资产行打索引状态标记：全部 active 索引都有向量才算已索引
+pub fn mark_indexed(store: &mm_store::Store, summaries: &mut [AssetSummary], asset_ids: &[i64]) {
+    let mut shared: Option<std::collections::HashSet<i64>> = None;
+    for idx in store.list_active_indexes().unwrap_or_default() {
+        let set: std::collections::HashSet<i64> = store
+            .embedded_ids(idx.index_id, asset_ids)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        shared = Some(match shared {
+            None => set,
+            Some(prev) => prev.intersection(&set).copied().collect(),
+        });
+    }
+    let indexed = shared.unwrap_or_default();
+    for s in summaries.iter_mut() {
+        s.indexed = indexed.contains(&(s.asset_id as i64));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]

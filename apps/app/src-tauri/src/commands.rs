@@ -41,34 +41,32 @@ pub fn list_timeline(
     let rows = store
         .list_page(parsed, page_size.unwrap_or(200), folder_id.map(i64::from))
         .map_err(err_code)?;
+    // 索引状态标记（规格 0007 §1：未建索引的网格呼吸点）
+    let ids: Vec<i64> = rows.iter().map(|r| r.asset_id).collect();
+    let mut summaries: Vec<AssetSummary> = rows
+        .iter()
+        .map(|r| AssetSummary {
+            asset_id: r.asset_id as i32,
+            thumb_path: r.thumb_key.as_ref().map(|k| {
+                thumbs_abs_path(&state.workspace, k)
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+            width: r.width,
+            height: r.height,
+            taken_at: r.taken_at as f64,
+            indexed: false,
+        })
+        .collect();
+    crate::state::mark_indexed(&store, &mut summaries, &ids);
     let mut groups: Vec<YearGroup> = Vec::new();
-    for r in &rows {
+    for (r, s) in rows.iter().zip(summaries) {
         let year: u16 = r.year.parse().unwrap_or(1970);
         match groups.last_mut() {
-            Some(g) if g.year == year => g.items.push(AssetSummary {
-                asset_id: r.asset_id as i32,
-                thumb_path: r.thumb_key.as_ref().map(|k| {
-                    thumbs_abs_path(&state.workspace, k)
-                        .to_string_lossy()
-                        .into_owned()
-                }),
-                width: r.width,
-                height: r.height,
-                taken_at: r.taken_at as f64,
-            }),
+            Some(g) if g.year == year => g.items.push(s),
             _ => groups.push(YearGroup {
                 year,
-                items: vec![AssetSummary {
-                    asset_id: r.asset_id as i32,
-                    thumb_path: r.thumb_key.as_ref().map(|k| {
-                        thumbs_abs_path(&state.workspace, k)
-                            .to_string_lossy()
-                            .into_owned()
-                    }),
-                    width: r.width,
-                    height: r.height,
-                    taken_at: r.taken_at as f64,
-                }],
+                items: vec![s],
             }),
         }
     }

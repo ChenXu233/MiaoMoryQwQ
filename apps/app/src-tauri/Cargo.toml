@@ -28,6 +28,9 @@ specta-typescript = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = "0.1"
+# 文件夹 watcher 自动同步（规格 0001 §3.9，2026-09-09 所有者指示提入本期）：
+# 服务"资料库永远自动最新"主线——导入后新增照片无需任何手动操作即可入库建索引
+notify = "8"
 mm-core = { path = "../../../crates/core" }
 mm-platform = { path = "../../../crates/platform" }
 mm-store = { path = "../../../crates/store" }

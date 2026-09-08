@@ -9,6 +9,7 @@ export function useFolders() {
   if (!started) {
     started = true;
     void events.folderStatusChangedEvent.listen(() => void load());
+    void events.embedProgressEvent.listen(() => void load()); // 建索引徽标实时更新
     window.addEventListener("mm-library-changed", () => void load());
   }
   async function load() {

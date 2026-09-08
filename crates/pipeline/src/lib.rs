@@ -259,6 +259,43 @@ impl ImportEngine {
         };
         tracing::debug!(budget_mb = budget / (1024 * 1024), "导入 IO 预算");
 
+        // ---- 增量预检（规格 0001 §3.8）：storage_key+size 与库内 ready 资产一致即跳过，
+        // 不读盘不哈希。重导同一文件夹与 watcher 自动同步都只处理新增/变化文件。----
+        let files = {
+            let ready: std::collections::HashMap<String, i64> = Store::open(&self.db_path)
+                .map(|s| {
+                    s.folder_ready_sizes(folder_id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect()
+                })
+                .unwrap_or_default();
+            let before = files.len();
+            let files: Vec<PathBuf> = files
+                .into_iter()
+                .filter(|p| {
+                    let key = p.to_string_lossy().into_owned();
+                    match (std::fs::metadata(p), ready.get(&key)) {
+                        (Ok(m), Some(&size)) => m.len() as i64 != size, // 未变化 → 跳过
+                        _ => true,                                      // 新文件/库内无记录 → 处理
+                    }
+                })
+                .collect();
+            let skipped = before - files.len();
+            tracing::info!(skipped, pending = files.len(), "增量预检完成");
+            {
+                let mut state = self.state.lock().unwrap();
+                if let Some(job) = state.job.as_mut() {
+                    job.total = files.len() as u64;
+                }
+            }
+            files
+        };
+        if files.is_empty() {
+            self.finish(job_id, 0);
+            return;
+        }
+
         // ---- IO 预取线程：整批读入内存（预算内），工作线程解码零盘 IO ----
         let batch_budget = (budget / 2).max(1);
         let workers = worker_count(budget, rayon::current_num_threads());

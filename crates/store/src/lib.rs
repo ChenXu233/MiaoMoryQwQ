@@ -651,6 +651,53 @@ impl Store {
         Ok(rows)
     }
 
+    /// 该工作区 ready 资产的 (storage_key, size) 清单——增量预检比对用（规格 0001 §3.8）
+    pub fn folder_ready_sizes(&self, folder_id: i64) -> Result<Vec<(String, i64)>> {
+        let rows = self
+            .conn
+            .prepare(
+                "SELECT storage_key, size FROM assets
+                 WHERE folder_id = ?1 AND status = 'ready' AND size IS NOT NULL",
+            )?
+            .query_map(params![folder_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 待建索引（ready 未嵌入且文件夹在线）数量；folder_id=None 时全库统计
+    pub fn pending_index_count(&self, index_id: i64, folder_id: Option<i64>) -> Result<i64> {
+        let table = self.vec_table(index_id)?;
+        let sql = format!(
+            "SELECT COUNT(*) FROM assets a
+             JOIN folders f ON f.folder_id = a.folder_id
+             WHERE a.status = 'ready' AND f.status = 'online'
+               AND (?1 IS NULL OR a.folder_id = ?1)
+               AND a.asset_id NOT IN (SELECT asset_id FROM {table})"
+        );
+        Ok(self
+            .conn
+            .query_row(&sql, params![folder_id], |r| r.get(0))?)
+    }
+
+    /// 给定资产中已有该索引向量的集合（网格索引状态标记用）
+    pub fn embedded_ids(&self, index_id: i64, asset_ids: &[i64]) -> Result<Vec<i64>> {
+        if asset_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let table = self.vec_table(index_id)?;
+        let placeholders = asset_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT asset_id FROM {table} WHERE asset_id IN ({placeholders})");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(asset_ids.iter()))?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            out.push(r.get(0)?);
+        }
+        Ok(out)
+    }
+
     /// 同内容（同 sha256）的其他资产里，找一条在该索引已有向量的（跨工作区免重复推理）
     pub fn find_embedding_source(
         &self,

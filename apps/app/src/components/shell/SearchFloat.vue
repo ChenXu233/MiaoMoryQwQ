@@ -98,6 +98,7 @@ onBeforeUnmount(() => {
           找到 <b class="num">{{ hits.length }}</b> 张与「<b>{{ search.query.value.trim() }}</b>」相关的照片
         </span>
         <span v-if="scopeName">· 范围「<b>{{ scopeName }}</b>」</span>
+        <span v-if="search.pendingIndexing.value > 0" class="sp-pending num">· 建立索引中 {{ search.pendingIndexing.value }}</span>
         <span class="sp-view">
           <button :class="{ on: search.spView.value === 'grid' }" aria-label="网格视图" @click="search.spView.value = 'grid'">▦</button>
           <button :class="{ on: search.spView.value === 'list' }" aria-label="列表视图" @click="search.spView.value = 'list'">☰</button>
@@ -113,6 +114,9 @@ onBeforeUnmount(() => {
       </div>
       <div v-else-if="hits.length === 0" class="sp-miss">
         <p>没有找到相关照片。试试更具体的词。</p>
+        <p v-if="search.pendingIndexing.value > 0" class="sp-pending num">
+          还有 {{ search.pendingIndexing.value }} 张照片正在建立索引，完成后会自动可搜。
+        </p>
       </div>
       <div v-else-if="search.spView.value === 'grid'" class="sp-grid">
         <PhotoTile

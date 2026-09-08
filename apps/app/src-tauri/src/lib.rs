@@ -8,6 +8,7 @@ mod data_commands;
 mod embed_worker;
 mod events;
 mod folder_commands;
+mod folder_watcher;
 mod search_commands;
 mod state;
 
@@ -127,6 +128,12 @@ pub fn run() {
                     app.handle().clone(),
                 );
             }
+
+            // 文件夹 watcher 自动同步（规格 0001 §3.9）：启动即预检全部已注册文件夹
+            folder_watcher::FolderWatcher::spawn(
+                app.state::<AppState>().workspace.db_path(),
+                app.state::<AppState>().engine.clone(),
+            );
 
             // 开发辅助（仅 debug 构建）：设置 MIAOMORY_DEV_AUTO_IMPORT=<目录> 则启动即导入，
             // 走与 IPC 命令完全相同的装配路径，用于无 UI 的性能走查

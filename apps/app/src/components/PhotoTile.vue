@@ -11,6 +11,8 @@ const props = defineProps<{
   /** 瀑布流：按宽高比撑高单元格 */
   fluid?: boolean;
   badge?: string;
+  /** 未建语义索引：右下角呼吸点（规格 0007 §1 索引状态可见） */
+  unindexed?: boolean;
 }>();
 
 const emit = defineEmits<{ open: [item: AssetSummary] }>();
@@ -35,6 +37,7 @@ const ratio = computed(() => {
     <span class="ph">
       <img v-if="thumb" :src="thumb" alt="" loading="lazy" />
     </span>
+    <span v-if="unindexed" class="idx-dot" title="建立索引中" />
     <span class="date-pill">{{ formatDate(item.taken_at) }}</span>
     <span v-if="badge" class="badge">{{ badge }}</span>
   </button>

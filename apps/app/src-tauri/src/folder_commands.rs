@@ -21,6 +21,19 @@ pub struct FolderInfo {
     /// online | offline | missing
     pub status: String,
     pub asset_count: i32,
+    /// 待建索引的 ready 资产数（>0 时侧栏显示「建索引中 N」，规格 0007 §1）
+    pub pending_index: i32,
+}
+
+/// 主索引（第一套 active 索引）的待嵌计数；无 active 索引返回 0
+fn pending_index_of(store: &mm_store::Store, folder_id: i64) -> i32 {
+    store
+        .list_active_indexes()
+        .ok()
+        .and_then(|idxs| idxs.first().map(|i| i.index_id))
+        .and_then(|iid| store.pending_index_count(iid, Some(folder_id)).ok())
+        .and_then(|n| i32::try_from(n).ok())
+        .unwrap_or(0)
 }
 
 #[tauri::command]
@@ -31,12 +44,16 @@ pub fn list_folders(state: State<'_, AppState>) -> Result<Vec<FolderInfo>, Strin
         .list_folders()
         .map_err(mode_err)?
         .into_iter()
-        .map(|f| FolderInfo {
-            folder_id: i32::try_from(f.folder_id).unwrap_or(0),
-            path: f.path,
-            label: f.label,
-            status: f.status,
-            asset_count: i32::try_from(f.asset_count).unwrap_or(0),
+        .map(|f| {
+            let fid = f.folder_id;
+            FolderInfo {
+                folder_id: i32::try_from(fid).unwrap_or(0),
+                path: f.path,
+                label: f.label,
+                status: f.status,
+                asset_count: i32::try_from(f.asset_count).unwrap_or(0),
+                pending_index: pending_index_of(&store, fid),
+            }
         })
         .collect())
 }
@@ -243,5 +260,6 @@ fn folder_info(store: &mm_store::Store, folder_id: i64) -> Result<FolderInfo, St
         label: f.label,
         status: f.status,
         asset_count: i32::try_from(f.asset_count).unwrap_or(0),
+        pending_index: pending_index_of(store, folder_id),
     })
 }

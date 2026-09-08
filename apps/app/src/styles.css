@@ -275,6 +275,13 @@ body {
   color: var(--mm-muted);
   flex: none;
 }
+.folder-item .idx {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--mm-accent);
+  flex: none;
+  animation: pulse 1.6s ease-in-out infinite;
+}
 .folder-item:hover {
   background: color-mix(in srgb, var(--mm-fg) 5%, transparent);
 }
@@ -293,11 +300,44 @@ body {
   gap: 4px;
   padding-top: 10px;
 }
-.drawer-close {
+/* 特异性须压过 .icon-btn 的 inline-flex，否则关闭钮在桌面常显（走查修复） */
+.icon-btn.drawer-close {
   display: none;
 }
-body.drawer .drawer-close {
+body.drawer .icon-btn.drawer-close {
   display: inline-flex;
+}
+/* 侧边栏收起态（桌面；body.rail 由 App.vue 持久化到 localStorage） */
+body.rail .sidebar {
+  transform: translateX(-102%);
+  visibility: hidden;
+}
+body.rail .frame {
+  margin-left: 0;
+}
+/* 收起态：内容左侧让出恢复钮的宽度（否则盖住时间线/瀑布流切换） */
+body.rail .frame > .page {
+  padding-left: 58px;
+}
+.rail-fab {
+  position: fixed;
+  left: 14px;
+  top: 14px;
+  z-index: 40;
+  width: 36px;
+  height: 36px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--mm-accent), var(--mm-accent-2));
+  color: var(--mm-accent-fg);
+  border: none;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 8px 20px -8px color-mix(in srgb, var(--mm-accent) 60%, transparent);
+  animation: fadeUp 0.25s ease both;
 }
 .icon-btn {
   width: 32px;
@@ -478,6 +518,19 @@ body.drawer .drawer-close {
   color: #fff;
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+/* 未建语义索引：右下角呼吸点（规格 0007 §1） */
+.tile .idx-dot {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--mm-accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--mm-accent) 70%, transparent);
+  animation: pulse 1.6s ease-in-out infinite;
   pointer-events: none;
 }
 .filter-chip {
@@ -779,6 +832,11 @@ body.drawer .drawer-close {
   padding: 20px 18px 22px;
   text-align: center;
 }
+.sp-pending {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--mm-accent);
+}
 .sp-empty {
   padding: 34px 18px;
   text-align: center;
@@ -1045,10 +1103,10 @@ body.drawer .scrim {
   pointer-events: auto;
 }
 
-/* ===== 导入任务卡（左下） / 通知（右上） / toast ===== */
+/* ===== 导入任务卡（右下可收纳，2026-09-09 所有者裁定） / 通知（右上） / toast ===== */
 .import-card {
   position: fixed;
-  left: 18px;
+  right: 18px;
   bottom: 18px;
   z-index: 47;
   width: 340px;
@@ -1062,11 +1120,27 @@ body.drawer .scrim {
   padding: 15px 17px 13px;
   animation: fadeUp 0.3s ease both;
 }
+.import-card.collapsed {
+  width: 250px;
+  padding: 10px 14px 9px;
+}
 .import-card .row1 {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   margin-bottom: 8px;
+}
+.import-card .hgroup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.import-card .fold {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--mm-muted);
 }
 .import-card .label {
   font-size: 12.5px;

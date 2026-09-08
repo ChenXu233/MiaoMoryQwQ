@@ -113,6 +113,7 @@ onUnmounted(() => {
               v-for="it in g.items"
               :key="it.asset_id"
               :item="it"
+              :unindexed="!it.indexed"
               @open="openPhoto"
             />
           </div>
@@ -136,6 +137,7 @@ onUnmounted(() => {
             :key="it.asset_id"
             :item="it"
             fluid
+            :unindexed="!it.indexed"
             @open="openPhoto"
           />
         </div>

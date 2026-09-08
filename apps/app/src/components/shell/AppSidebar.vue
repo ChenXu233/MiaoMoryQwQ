@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 侧边栏（UI 对齐 v2/v9）：桌面常驻挤压式，窄屏为抽屉（body.drawer）。
-// 导航（首页/照片库）+ 文件夹区（计数 + 状态点 + ＋导入）+ 左下设置齿轮。
+// 导航（首页/照片库）+ 文件夹区（计数 + 状态点 + 建索引徽标 + ＋导入）+
+// 底部：左齿轮设置 / 右收起钮（body.rail，2026-09-09 所有者裁定）。
 import { computed } from "vue";
 import { useRoute, navigate } from "../../lib/router";
 import { useFolders } from "../../composables/useFolders";
@@ -35,6 +36,16 @@ function statusDot(s: string): string {
 
 function closeDrawer() {
   document.body.classList.remove("drawer");
+}
+
+function collapse() {
+  document.body.classList.add("rail");
+  try {
+    localStorage.setItem("mm-rail", "1");
+  } catch {
+    /* 隐私模式等场景忽略 */
+  }
+  window.dispatchEvent(new CustomEvent("mm-rail-changed"));
 }
 </script>
 
@@ -87,14 +98,19 @@ function closeDrawer() {
           :class="statusDot(f.status)"
         />
         <span class="n">{{ f.label || f.path }}</span>
+        <span v-if="f.pending_index > 0" class="idx num" title="建立索引中">◌ {{ f.pending_index }}</span>
         <span class="c num">{{ f.asset_count }}</span>
       </button>
     </div>
 
     <div class="side-foot">
-      <span class="sp" style="flex: 1" />
       <button class="icon-btn" title="设置" aria-label="设置" @click="navigate('settings')">
         <svg style="width: 17px; height: 17px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03Z" /></svg>
+      </button>
+      <span class="sp" style="flex: 1" />
+      <!-- 收起侧边栏（桌面；收起后左上角悬浮钮恢复） -->
+      <button class="icon-btn" title="收起侧边栏" aria-label="收起侧边栏" @click="collapse">
+        <svg style="width: 17px; height: 17px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 7-5 5 5 5" /><path d="m18 7-5 5 5 5" /></svg>
       </button>
       <!-- 窄屏抽屉关闭钮（.drawer-close 默认隐藏，body.drawer 时显示） -->
       <button class="icon-btn drawer-close" aria-label="关闭侧边栏" @click="closeDrawer">

@@ -8,6 +8,7 @@ const searching = ref(false);
 const results = ref<SearchHit[] | null>(null);
 const elapsedLabel = ref("");
 const searchError = ref(false);
+const pendingIndexing = ref(0); // 待建索引数（结果头/空结果提示用，规格 0007 §1）
 const spView = ref<"grid" | "list">("grid");
 let timer: number | undefined;
 let seq = 0;
@@ -35,9 +36,11 @@ async function run(immediate: boolean) {
       elapsedLabel.value = ms < 1000 ? `${(ms / 1000).toFixed(2)} 秒` : `${ms} ms`;
       if (res.status === "ok") {
         results.value = res.data.items;
+        pendingIndexing.value = res.data.pending_indexing;
         searchError.value = false;
       } else {
         results.value = [];
+        pendingIndexing.value = 0;
         searchError.value = true;
       }
     } finally {
@@ -59,12 +62,14 @@ export function useSearch() {
     results,
     elapsedLabel,
     searchError,
+    pendingIndexing,
     spView,
     run,
     clear: () => {
       query.value = "";
       results.value = null;
       searchError.value = false;
+      pendingIndexing.value = 0;
     },
   };
 }

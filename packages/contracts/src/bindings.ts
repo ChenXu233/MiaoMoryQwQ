@@ -87,6 +87,8 @@ export type AssetSummary = {
 	width: number | null,
 	height: number | null,
 	taken_at: number | null,
+	/**  语义索引是否已建立（全部 active 索引均有向量；false=网格显示建索引呼吸点） */
+	indexed: boolean,
 };
 
 /**  当前数据布局快照（设置对话框数据区） */
@@ -130,6 +132,8 @@ export type FolderInfo = {
 	/**  online | offline | missing */
 	status: string,
 	asset_count: number,
+	/**  待建索引的 ready 资产数（>0 时侧栏显示「建索引中 N」，规格 0007 §1） */
+	pending_index: number,
 };
 
 /**  来源文件夹状态变化（online/offline/missing）→ 侧栏状态点与灯箱状态条刷新 */

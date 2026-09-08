@@ -21,6 +21,7 @@ const lightbox = useLightbox();
 useModelStatus(); // 单例：启动即检查模型并自动下载（规格 0004）
 const toastMsg = ref<string | null>(null);
 let toastTimer: number | undefined;
+const rail = ref(false); // 侧边栏收起态（body.rail，2026-09-09 所有者裁定）
 
 function toast(msg: string) {
   toastMsg.value = msg;
@@ -34,6 +35,21 @@ function toggleDrawer() {
 function closeDrawer() {
   document.body.classList.remove("drawer");
 }
+function applyRail(on: boolean) {
+  rail.value = on;
+  document.body.classList.toggle("rail", on);
+}
+function expandRail() {
+  applyRail(false);
+  try {
+    localStorage.removeItem("mm-rail");
+  } catch {
+    /* ignore */
+  }
+}
+function onRailChanged() {
+  applyRail(document.body.classList.contains("rail"));
+}
 function goBack() {
   history.back();
 }
@@ -45,9 +61,20 @@ function onGlobalKey(e: KeyboardEvent) {
 
 onMounted(() => {
   window.addEventListener("keydown", onGlobalKey);
+  window.addEventListener("mm-rail-changed", onRailChanged);
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem("mm-rail");
+  } catch {
+    /* ignore */
+  }
+  applyRail(saved === "1");
   void importJob.snapshot();
 });
-onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKey));
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onGlobalKey);
+  window.removeEventListener("mm-rail-changed", onRailChanged);
+});
 </script>
 
 <template>
@@ -58,6 +85,17 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKey));
     <div class="amb amb-c" />
 
     <AppSidebar @toast="toast" />
+
+    <!-- 侧边栏收起后的恢复钮（左上悬浮） -->
+    <button v-if="rail" class="rail-fab" aria-label="展开侧边栏" title="展开侧边栏" @click="expandRail">
+      <svg style="width: 17px; height: 17px" viewBox="0 0 24 24" fill="currentColor">
+        <ellipse cx="12" cy="15.6" rx="5.4" ry="4.5" />
+        <circle cx="5.2" cy="10" r="2.15" />
+        <circle cx="9.5" cy="6.9" r="2.25" />
+        <circle cx="14.5" cy="6.9" r="2.25" />
+        <circle cx="18.8" cy="10" r="2.15" />
+      </svg>
+    </button>
 
     <div class="frame">
       <HomePage v-if="route === 'home'" />

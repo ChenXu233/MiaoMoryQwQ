@@ -253,6 +253,8 @@ pub async fn search_assets(
                     width: row.width,
                     height: row.height,
                     taken_at: row.taken_at as f64,
+                    // 纯文本流命中 = 语义索引尚未建立（网格呼吸点语义一致）
+                    indexed: hit.matched.slug() != "text",
                 },
                 score: (hit.score / max_score * 1000.0).round() / 1000.0,
                 matched: hit.matched.slug().to_string(),
