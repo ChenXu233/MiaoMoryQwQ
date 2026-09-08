@@ -1,4 +1,4 @@
-// 库数据（时间线 keyset 分页 + 工作区作用域）：单一实例，导入完成/切换工作区时重载
+// 库数据（时间线 keyset 分页 + 工作区作用域）：单一数据实例，导入完成/切换工作区时重载
 import { ref, watch } from "vue";
 import { commands, type AssetSummary, type YearGroup } from "@miaomory/contracts";
 import { selectedFolderId } from "./useWorkspaceSelection";
@@ -8,10 +8,14 @@ const groups = ref<YearGroup[]>([]);
 const cursor = ref<string | null>(null);
 const exhausted = ref(false);
 const loading = ref(false);
-let started = false;
+// 忙碌期间到达的 reset 记账：当前装载完成后补一次重载（快速切工作区不丢刷新）
+let resetQueued = false;
 
 async function loadPage(reset: boolean) {
-  if (loading.value) return;
+  if (loading.value) {
+    if (reset) resetQueued = true;
+    return;
+  }
   loading.value = true;
   try {
     if (reset) {
@@ -31,15 +35,18 @@ async function loadPage(reset: boolean) {
     if (!res.data.next_cursor) exhausted.value = true;
   } finally {
     loading.value = false;
+    if (resetQueued) {
+      resetQueued = false;
+      void loadPage(true);
+    }
   }
 }
 
 export function useLibrary() {
-  if (!started) {
-    started = true;
-    // 工作区切换 → 重载（原型 v8 语义延伸：范围跟随侧栏选择）
-    watch(selectedFolderId, () => void loadPage(true));
-  }
+  // 工作区切换 → 重载（原型 v8 语义延伸：范围跟随侧栏选择）。
+  // watch 随调用方组件的生命周期注册/销毁（与 useSearch 一致）——不能加单例守卫：
+  // 守卫会让二次挂载后切换工作区不再刷新（watch 已随首次挂载的 effectScope 销毁）
+  watch(selectedFolderId, () => void loadPage(true));
   return {
     groups,
     exhausted,
