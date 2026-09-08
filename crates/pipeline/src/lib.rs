@@ -48,6 +48,20 @@ fn adaptive_io_budget() -> u64 {
     (total / 8).clamp(256 * 1024 * 1024, 1024 * 1024 * 1024)
 }
 
+/// 解码工作线程数：预算驱动（≈96MB/线程瞬态），上限 = 逻辑核 - 2（导入属分钟级
+/// 后台任务，保留 2 个逻辑核给 UI/系统/读路径），再 clamp 到池上限。
+/// 用 saturating_sub——逻辑核 ≤ 2 时退化为单线程，绝不因 usize 下溢 panic（走查修复）
+fn worker_count(budget: u64, logical: usize) -> usize {
+    let logical = logical.max(1);
+    let core_cap = logical.saturating_sub(2).max(1) as u64;
+    (budget / (96 * 1024 * 1024))
+        .clamp(1, core_cap)
+        .clamp(1, logical as u64) as usize
+}
+
+/// 单文件读入上限（与解码分配上限对齐）：超限按读失败进失败列表，不整读进内存
+const MAX_READ_BYTES: u64 = 512 * 1024 * 1024;
+
 /// 分段耗时累计（纳秒；跨线程原子累加，批次日志与完成摘要共用）
 #[derive(Default)]
 struct ImportTimings {
@@ -247,16 +261,17 @@ impl ImportEngine {
 
         // ---- IO 预取线程：整批读入内存（预算内），工作线程解码零盘 IO ----
         let batch_budget = (budget / 2).max(1);
-        // 解码线程数留出余量（逻辑核 - 2）：导入属分钟级后台任务，保留 2 个逻辑核
-        // 给 UI/系统/读路径，避免解码打满全部核时界面与整机响应被拖垮
-        let core_cap = (rayon::current_num_threads() - 2).max(1) as u64;
-        let workers = (budget / (96 * 1024 * 1024))
-            .clamp(1, core_cap)
-            .clamp(1, rayon::current_num_threads() as u64) as usize;
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(workers)
-            .build()
-            .expect("构建导入工作池失败");
+        let workers = worker_count(budget, rayon::current_num_threads());
+        let pool = match rayon::ThreadPoolBuilder::new().num_threads(workers).build() {
+            Ok(p) => p,
+            // 资源枯竭等极端场景：按既有先例收尾任务（finish 置 finished 并广播），
+            // 绝不 panic——run() 在后台线程，panic 会让任务永久卡在未完成态
+            Err(e) => {
+                tracing::error!(error = %e, "导入工作池构建失败，任务终止");
+                self.finish(job_id, 1);
+                return;
+            }
+        };
         let (tx, rx) = std::sync::mpsc::sync_channel::<IoBatch>(1);
         let timings = Arc::new(ImportTimings::default());
         {
@@ -264,7 +279,7 @@ impl ImportEngine {
             let abort_flag = Arc::clone(&self.io_abort);
             let files_for_io = files.clone();
             let timings_for_io = Arc::clone(&timings);
-            std::thread::Builder::new()
+            let spawn_io = std::thread::Builder::new()
                 .name("mm-import-io".into())
                 .spawn(move || {
                     produce_batches(
@@ -276,8 +291,12 @@ impl ImportEngine {
                         &tx,
                         &timings_for_io,
                     );
-                })
-                .expect("启动 IO 预取线程失败");
+                });
+            if let Err(e) = spawn_io {
+                tracing::error!(error = %e, "IO 预取线程启动失败，任务终止");
+                self.finish(job_id, 1);
+                return;
+            }
         }
 
         for batch in rx {
@@ -370,8 +389,9 @@ impl ImportEngine {
                                 let taken_at = photo
                                     .taken_at
                                     .unwrap_or_else(|| mtime_secs(path).unwrap_or(0));
-                                // 元数据就地提取，全尺寸图在闭包末尾即释放（峰值 ≈ 1 张/工作线程）
-                                let (width, height) = (photo.image.width, photo.image.height);
+                                // 入库尺寸用原图字段：HEIC 快路径的 image 是内嵌缩略图，
+                                // 元数据就地提取，解码图在闭包末尾即释放（峰值 ≈ 1 张/工作线程）
+                                let (width, height) = (photo.width, photo.height);
                                 let t0 = Instant::now();
                                 let (thumb, _, _) = match make_thumbnail(&photo.image) {
                                     Ok(t) => t,
@@ -582,6 +602,14 @@ fn read_file_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
     std::fs::read(path)
 }
 
+/// 带单文件上限的整读：先查元数据长度，超限直接报错（不预读、不受批次预算放行）
+fn read_file_bytes_capped(path: &Path) -> std::io::Result<Vec<u8>> {
+    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_READ_BYTES {
+        return Err(std::io::Error::other("单文件超出读入上限"));
+    }
+    read_file_bytes(path)
+}
+
 /// IO 预取生产者：按（字节数 ≤ batch_budget 且条数 ≤ chunk_size）分批整读入内存，
 /// 经有界通道（容量 1）交给主循环；abort 置位即停。单文件读失败按 Failed 结果传递。
 #[allow(clippy::too_many_arguments)]
@@ -603,7 +631,7 @@ fn produce_batches(
             break;
         }
         let t0 = Instant::now();
-        let read = read_file_bytes(path).map_err(|_| ErrorCode::ReadFailed);
+        let read = read_file_bytes_capped(path).map_err(|_| ErrorCode::ReadFailed);
         let file_ms = t0.elapsed().as_millis() as u64;
         max_file_ms = max_file_ms.max(file_ms);
         timings
@@ -790,6 +818,19 @@ mod tests {
         // 裁定 22：clamp(总内存/8, 256MB, 1GB)
         let b = adaptive_io_budget();
         assert!((256 * 1024 * 1024..=1024 * 1024 * 1024).contains(&b));
+    }
+
+    #[test]
+    fn worker_count_never_underflows_even_on_single_thread() {
+        // 逻辑核 1/2：退化单线程（此前 `n - 2` 在 debug 构建直接 panic）
+        assert_eq!(worker_count(1024 * 1024 * 1024, 1), 1);
+        assert_eq!(worker_count(1024 * 1024 * 1024, 2), 1);
+        // 预算极小也保底 1
+        assert_eq!(worker_count(0, 8), 1);
+        // 预算 10 线程、8 核：让 2 核（cap=6）
+        assert_eq!(worker_count(1024 * 1024 * 1024, 8), 6);
+        // 预算 2 线程、32 核：预算说话
+        assert_eq!(worker_count(3 * 96 * 1024 * 1024, 32), 3);
     }
 
     #[test]

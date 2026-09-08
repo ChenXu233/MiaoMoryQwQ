@@ -5,14 +5,27 @@ use std::path::Path;
 
 use mm_core::{DecodedImage, ErrorCode};
 
-/// 解码产物
+/// 解码产物。`image` 可能是内嵌缩略图（HEIC 快路径，仅供缩略图生成）；
+/// `width/height` 恒为**原图**尺寸（入库元数据用，与 image 尺寸解耦）。
 pub struct DecodedPhoto {
     pub image: DecodedImage,
+    pub width: u32,
+    pub height: u32,
     pub mime: &'static str,
     /// EXIF 拍摄时间（UTC 秒）；无则由调用方回落 mtime
     pub taken_at: Option<i64>,
     /// 存档用最小 EXIF JSON（taken_at / orientation）
     pub exif_json: Option<String>,
+}
+
+/// 解码炸弹防护上限（栅格与 HEIC 同限）：单边 ≤16384px、RGB8 解压分配 ≤512MB
+const DECODE_MAX_EDGE: u32 = 16384;
+const DECODE_MAX_ALLOC_BYTES: u64 = 512 * 1024 * 1024;
+
+fn dims_within_limits(w: u32, h: u32) -> bool {
+    w <= DECODE_MAX_EDGE
+        && h <= DECODE_MAX_EDGE
+        && u64::from(w) * u64::from(h) * 3 <= DECODE_MAX_ALLOC_BYTES
 }
 
 pub const SUPPORTED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "heic", "heif"];
@@ -65,9 +78,9 @@ fn decode_raster(bytes: &[u8], mime: &'static str) -> Result<DecodedPhoto, Error
     let mut reader = ImageReader::new(std::io::Cursor::new(bytes));
     // 解码炸弹防护：单边 ≤16384px、解压分配 ≤512MB（超出报 DecodeFailed 走失败隔离）
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(16384);
-    limits.max_image_height = Some(16384);
-    limits.max_alloc = Some(512 * 1024 * 1024);
+    limits.max_image_width = Some(DECODE_MAX_EDGE);
+    limits.max_image_height = Some(DECODE_MAX_EDGE);
+    limits.max_alloc = Some(DECODE_MAX_ALLOC_BYTES);
     reader.limits(limits);
     let mut decoder = reader
         .with_guessed_format()
@@ -89,6 +102,8 @@ fn decode_raster(bytes: &[u8], mime: &'static str) -> Result<DecodedPhoto, Error
             height,
             rgb: rgb.into_raw(),
         },
+        width,
+        height,
         mime,
         taken_at,
         exif_json: exif_meta,
@@ -104,6 +119,13 @@ fn decode_heif(bytes: &[u8], allow_embedded_thumb: bool) -> Result<DecodedPhoto,
     let primary = ctx
         .primary_image_handle()
         .map_err(|_| ErrorCode::DecodeFailed)?;
+    // 原图尺寸（句柄元数据，不解码即得）：入库 width/height 恒用它——
+    // 快路径解码的是内嵌缩略图，绝不能让缩略图尺寸冒充原图尺寸（走查修复）
+    let (orig_width, orig_height) = (primary.width(), primary.height());
+    // 解码炸弹防护：与 decode_raster 同限（libheif 无内建限额，须在读句柄后预检）
+    if !dims_within_limits(orig_width, orig_height) {
+        return Err(ErrorCode::DecodeFailed);
+    }
 
     // HEIC 内嵌 EXIF（TIFF 块，去掉 "Exif\0\0" 前缀后可解析）
     let mut ids = [0u32; 1];
@@ -157,6 +179,8 @@ fn decode_heif(bytes: &[u8], allow_embedded_thumb: bool) -> Result<DecodedPhoto,
 
     Ok(DecodedPhoto {
         image: DecodedImage { width, height, rgb },
+        width: orig_width,
+        height: orig_height,
         mime: "image/heic",
         taken_at,
         exif_json,
@@ -226,4 +250,23 @@ fn utc_seconds(dt: &exif::DateTime) -> i64 {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
     days * 86_400 + i64::from(dt.hour) * 3600 + i64::from(dt.minute) * 60 + i64::from(dt.second)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_limits_accept_normals_reject_bombs() {
+        assert!(dims_within_limits(4032, 3024), "常规手机照片");
+        assert!(
+            dims_within_limits(16384, 8000),
+            "宽顶格但分配 393MB ≤ 512MB"
+        );
+        assert!(!dims_within_limits(20000, 100), "单边超 16384");
+        assert!(
+            !dims_within_limits(16384, 16384),
+            "顶格平方 768MB 超分配上限"
+        );
+    }
 }
