@@ -109,6 +109,9 @@ onBeforeUnmount(() => {
       <div v-if="!model.modelReady.value" class="sp-miss">
         <p>语义模型正在准备（下载/建索引中），稍等片刻再试。</p>
       </div>
+      <div v-else-if="!search.semanticReady.value" class="sp-miss">
+        <p>语义搜索不可用（推理运行时或模型未就绪），可在「设置 → 模型与推理」查看。</p>
+      </div>
       <div v-else-if="search.searchError.value" class="sp-miss">
         <p>语义搜索暂不可用。</p>
       </div>

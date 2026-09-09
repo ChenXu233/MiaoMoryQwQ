@@ -9,6 +9,7 @@ import { useModelStatus } from "./composables/useModelStatus";
 import AppSidebar from "./components/shell/AppSidebar.vue";
 import BottomDock from "./components/shell/BottomDock.vue";
 import ImportCard from "./components/shell/ImportCard.vue";
+import EmbedCard from "./components/shell/EmbedCard.vue";
 import SearchFloat from "./components/shell/SearchFloat.vue";
 import Lightbox from "./components/Lightbox.vue";
 import HomePage from "./pages/HomePage.vue";
@@ -62,6 +63,8 @@ function onGlobalKey(e: KeyboardEvent) {
 onMounted(() => {
   window.addEventListener("keydown", onGlobalKey);
   window.addEventListener("mm-rail-changed", onRailChanged);
+  // 全局 toast 通道（灯箱等深层组件无 emit 链时用）
+  window.addEventListener("mm-toast", ((e: CustomEvent<string>) => toast(e.detail)) as EventListener);
   let saved: string | null = null;
   try {
     saved = localStorage.getItem("mm-rail");
@@ -74,6 +77,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onGlobalKey);
   window.removeEventListener("mm-rail-changed", onRailChanged);
+  window.removeEventListener("mm-toast", ((e: CustomEvent<string>) => toast(e.detail)) as EventListener);
 });
 </script>
 
@@ -115,7 +119,12 @@ onBeforeUnmount(() => {
     <div class="scrim" @click="closeDrawer" />
 
     <SearchFloat v-if="route === 'library'" />
-    <ImportCard />
+
+    <!-- 右下浮动任务卡栈：导入卡 + 向量索引进度卡 -->
+    <div class="float-stack">
+      <ImportCard />
+      <EmbedCard />
+    </div>
 
     <div v-if="importJob.failedBanner.value && !importJob.job.value" class="notice" role="status">
       <span>有文件无法导入——原文件未受影响。清单见「设置 → 无法导入的文件」。</span>

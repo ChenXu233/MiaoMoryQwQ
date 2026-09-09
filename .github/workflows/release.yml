@@ -71,6 +71,12 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
+      # 安装包须随附 onnxruntime 变体（CPU/DirectML），缺失则启动语义降级（ADR-0014）
+      - name: 准备打包运行时（runtime/dml）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/prepare-bundle-runtime.ps1
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -38,3 +38,6 @@ desktop.ini
 # ===== 日志与临时文件 =====
 *.log
 *.tmp
+
+# ===== 打包资源（prepare-bundle-runtime.ps1 产物，不入库） =====
+apps/app/src-tauri/runtime/

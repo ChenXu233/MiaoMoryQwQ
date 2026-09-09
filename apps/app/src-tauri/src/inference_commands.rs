@@ -31,6 +31,9 @@ pub struct InferenceInfo {
     pub effective_ep: String,
     /// 非空 = 本次会话发生过降级（所选后端不可用），前端展示原因
     pub degraded_reason: Option<String>,
+    /// 非空 = 推理运行时整体不可用（变体缺失/清单损坏）：语义搜索与建索引停用，
+    /// 其余功能照常；前端以此区分「降级但可用」与「语义功能停用」
+    pub runtime_missing: Option<String>,
     pub options: Vec<EpOption>,
     /// 所选变体的运行时是否就绪（CUDA 下载/导入完成）
     pub runtime_ready: bool,
@@ -45,11 +48,16 @@ fn parse_ep(state: &AppState) -> mm_embed::EpKind {
 #[tauri::command]
 #[specta::specta]
 pub fn inference_info(state: State<'_, AppState>) -> InferenceInfo {
-    let manifest = mm_embed::runtime::runtime_manifest();
+    // 清单损坏不再 panic（曾令设置页必崩）：带出原因走 runtime_missing 展示
+    let (manifest, manifest_err) = match mm_embed::runtime::runtime_manifest() {
+        Ok(m) => (Some(m), None),
+        Err(e) => (None, Some(e)),
+    };
     let selected = parse_ep(&state);
     let degraded = state.ep_degraded.lock().unwrap().clone();
+    let runtime_missing = state.runtime_missing.lock().unwrap().clone().or(manifest_err);
     let gpu_detected = detect_discrete_gpu();
-    let cuda_variant = manifest.variant("cuda");
+    let cuda_variant = manifest.as_ref().and_then(|m| m.variant("cuda")).cloned();
     let runtime_ready = cuda_variant
         .map(|v| v.is_ready(&state.workspace.runtime_dir("cuda")))
         .unwrap_or(false);
@@ -83,6 +91,7 @@ pub fn inference_info(state: State<'_, AppState>) -> InferenceInfo {
             selected.as_str().into()
         },
         degraded_reason: degraded,
+        runtime_missing,
         options,
         runtime_ready,
         gpu_detected,
@@ -136,7 +145,14 @@ pub fn download_runtime(
     let app2 = app.clone();
 
     std::thread::spawn(move || {
-        let manifest = mm_embed::runtime::runtime_manifest();
+        let manifest = match mm_embed::runtime::runtime_manifest() {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!(reason = %e, "运行时清单解析失败，下载任务终止");
+                RUNTIME_DOWNLOAD_IN_FLIGHT.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
         let Some(variant) = manifest.variant(&kind).cloned() else {
             RUNTIME_DOWNLOAD_IN_FLIGHT.store(false, Ordering::SeqCst);
             return;
@@ -168,7 +184,8 @@ pub fn download_runtime(
 #[tauri::command]
 #[specta::specta]
 pub fn import_runtime(state: State<'_, AppState>, path: String) -> Result<bool, String> {
-    let manifest = mm_embed::runtime::runtime_manifest();
+    let manifest =
+        mm_embed::runtime::runtime_manifest().map_err(|e| format!("运行时清单损坏：{e}"))?;
     // 按 zip 名猜测变体（含 "cuda" 走 cuda，否则 cpu）
     let lower = path.to_ascii_lowercase();
     let kind = if lower.contains("cuda") {

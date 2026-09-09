@@ -155,26 +155,36 @@ function epLabel(o: InferenceInfo["options"][number]): string {
     </div>
   </div>
 
-  <!-- 推理加速 -->
-  <div class="card">
-    <div class="set-row" style="padding-top: 0">
-      <div class="set-info">
-        <div class="set-t">推理加速</div>
-        <div class="set-d">建索引与语义搜索使用的计算后端；默认 CPU，所有机器可用。</div>
+    <!-- 推理加速 -->
+    <div class="card">
+      <div class="set-row" style="padding-top: 0">
+        <div class="set-info">
+          <div class="set-t">推理加速</div>
+          <div class="set-d">建索引与语义搜索使用的计算后端；默认 CPU，所有机器可用。</div>
+        </div>
+        <span v-if="infInfo" class="mode-badge">
+          当前生效：{{ epNames[infInfo.effective_ep] ?? infInfo.effective_ep }}
+        </span>
       </div>
-      <span v-if="infInfo" class="mode-badge">
-        当前生效：{{ epNames[infInfo.effective_ep] ?? infInfo.effective_ep }}
-      </span>
-    </div>
 
-    <p
-      v-if="infInfo?.degraded_reason"
-      role="alert"
-      class="set-d"
-      style="color: var(--mm-danger); margin: 0 0 10px"
-    >
-      {{ infInfo.degraded_reason }}
-    </p>
+      <!-- 运行时整体不可用（比降级更严重：语义搜索与建索引停用） -->
+      <p
+        v-if="infInfo?.runtime_missing"
+        role="alert"
+        class="set-d"
+        style="color: var(--mm-danger); margin: 0 0 10px; font-weight: 550"
+      >
+        ⚠ 推理运行时不可用：{{ infInfo.runtime_missing }}。语义搜索与建索引自本次启动起停用，重装应用或恢复运行时文件后重启即可恢复。
+      </p>
+
+      <p
+        v-if="infInfo?.degraded_reason"
+        role="alert"
+        class="set-d"
+        style="color: var(--mm-danger); margin: 0 0 10px"
+      >
+        {{ infInfo.degraded_reason }}
+      </p>
 
     <div class="seg" role="group" aria-label="推理后端">
       <button

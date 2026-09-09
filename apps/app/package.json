@@ -8,6 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
+    "prepare:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/prepare-bundle-runtime.ps1",
     "tauri": "tauri"
   },
   "dependencies": {

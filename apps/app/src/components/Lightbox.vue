@@ -24,6 +24,27 @@ const isOneToOne = ref(false);
 const loadFailed = ref(false);
 const deleting = ref(false);
 
+// 单张重新向量化（2026-09-10 裁决）：清向量入队重嵌，进度见右下角索引卡
+const reembedding = ref(false);
+
+async function reembed() {
+  const it = current.value;
+  if (!it || reembedding.value) return;
+  reembedding.value = true;
+  try {
+    const res = await commands.reindexAssets([it.asset_id]);
+    if (res.status === "ok") {
+      window.dispatchEvent(
+        new CustomEvent("mm-toast", { detail: "已重新向量化这张照片，进度见右下角" }),
+      );
+    } else {
+      window.dispatchEvent(new CustomEvent("mm-toast", { detail: `重建失败：${res.error}` }));
+    }
+  } finally {
+    reembedding.value = false;
+  }
+}
+
 // 原图路径按需向后端取（AssetSummary 只带缩略图路径）
 const imagePath = ref<string | null>(null);
 // 源离线：原图 <img> 加载失败后置位；此时回退显示缩略图 + 状态条
@@ -256,7 +277,16 @@ function onKeydown(e: KeyboardEvent) {
       </button>
       <button
         type="button"
-        class="ml-6 rounded-md border border-red-400/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/20 disabled:opacity-40"
+        class="ml-6 rounded-md border border-white/30 px-3 py-1.5 text-sm hover:bg-white/10 disabled:opacity-40"
+        :disabled="reembedding"
+        title="重建这张照片的语义向量"
+        @click="reembed"
+      >
+        重新向量化
+      </button>
+      <button
+        type="button"
+        class="rounded-md border border-red-400/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/20 disabled:opacity-40"
         :disabled="deleting"
         @click="remove"
       >

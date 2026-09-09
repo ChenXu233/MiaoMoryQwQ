@@ -32,8 +32,9 @@ pub struct RuntimeVariant {
 
 pub const RUNTIME_MANIFEST_JSON: &str = include_str!("../assets/runtime-manifest.json");
 
-pub fn runtime_manifest() -> RuntimeManifest {
-    serde_json::from_str(RUNTIME_MANIFEST_JSON).expect("内置运行时清单损坏")
+/// 解析失败返回原因（清单损坏应降级报错，不允许 panic——打开设置页即崩的教训）
+pub fn runtime_manifest() -> Result<RuntimeManifest, String> {
+    serde_json::from_str(RUNTIME_MANIFEST_JSON).map_err(|e| format!("内置运行时清单损坏：{e}"))
 }
 
 impl RuntimeManifest {

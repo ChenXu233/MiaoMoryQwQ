@@ -50,6 +50,8 @@ pub fn app_builder() -> Builder<Wry> {
             search_commands::download_models,
             search_commands::search_assets,
             search_commands::reindex_all,
+            search_commands::reindex_folder,
+            search_commands::reindex_assets,
             data_commands::data_info,
             data_commands::open_data_folder,
             data_commands::set_data_location,
@@ -59,6 +61,7 @@ pub fn app_builder() -> Builder<Wry> {
             folder_commands::report_original_missing,
             folder_commands::asset_detail,
             folder_commands::storage_usage,
+            folder_commands::embed_status,
             inference_commands::inference_info,
             inference_commands::set_inference_ep,
             inference_commands::download_runtime,
@@ -124,13 +127,14 @@ pub fn run() {
             // 推理后端（spec 0008 / ADR-0014）：config.inference_ep → EpKind，
             // 进程最早处选定 onnxruntime 变体（一次性）；所选变体缺失/加载失败
             // 回退自带 DML 变体并记入降级（config 不改写，修复环境重启即生效）
-            let (ep, runtime_degraded) = {
+            let (ep, runtime_degraded, runtime_missing) = {
                 let cfg_value = paths.inference_ep.as_deref().unwrap_or("cpu");
                 let mut parsed = mm_embed::EpKind::parse(cfg_value).unwrap_or_else(|| {
                     tracing::warn!(value = cfg_value, "inference_ep 配置值无效，按 CPU 处理");
                     mm_embed::EpKind::Cpu
                 });
                 let mut degraded: Option<String> = None;
+                let mut missing: Option<String> = None;
                 #[cfg(windows)]
                 {
                     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -158,11 +162,14 @@ pub fn run() {
                         }
                     }
                     if !loaded {
-                        // 安装损坏的极端场景：无任何可用变体时 ort 惰性加载必然失败，快速失败并说明
+                        // 不再 panic：变体全缺 = 安装损坏，但语义功能之外的一切照常可用。
+                        // 记录原因走降级路径（索引不装配、搜索无语义流、设置页提示），
+                        // ort 未初始化时任何 session 构建都会失败，必须跳过装配。
                         let reason = last_err.unwrap_or_else(|| {
                             "找不到 onnxruntime 变体（自带 runtime\\dml 缺失，安装可能损坏）".into()
                         });
-                        panic!("推理运行时初始化失败：{reason}");
+                        missing = Some(reason);
+                        parsed = mm_embed::EpKind::Cpu;
                     }
                     if parsed == mm_embed::EpKind::Cuda {
                         if !candidates[0].is_file() {
@@ -190,7 +197,10 @@ pub fn run() {
                 if let Some(reason) = &degraded {
                     tracing::warn!(reason, "推理运行时降级");
                 }
-                (parsed, degraded)
+                if let Some(reason) = &missing {
+                    tracing::error!(reason, "推理运行时初始化失败");
+                }
+                (parsed, degraded, missing)
             };
 
             // 分发源：config.hf_endpoint 覆盖优先，默认 GitHub Release（规格 0004 / ADR-0010）
@@ -201,10 +211,13 @@ pub fn run() {
                 *app.state::<AppState>().ep_degraded.lock().unwrap() = Some(reason);
             }
 
-            // 模型已在本地则直接加载（重启后无需再下载）
+            // 模型已在本地则直接加载（重启后无需再下载）；运行时不可用时整体跳过装配
             {
                 let state = app.state::<AppState>();
-                if let Err(missing) = state.load_indexers() {
+                if let Some(reason) = runtime_missing {
+                    *state.runtime_missing.lock().unwrap() = Some(reason);
+                    tracing::error!("推理运行时不可用，跳过索引装配（语义搜索/建索引停用，其余功能照常）");
+                } else if let Err(missing) = state.load_indexers() {
                     tracing::info!(?missing, "模型未就绪，语义搜索保持降级");
                 }
                 embed_worker::EmbedWorker::spawn(

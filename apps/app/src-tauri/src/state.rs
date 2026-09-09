@@ -30,6 +30,9 @@ pub struct AppState {
     pub ep: mm_embed::EpKind,
     /// 最近一次装配的 EP 降级原因（所选 EP 失败回落 CPU 时非空，inference_info 消费）
     pub ep_degraded: std::sync::Mutex<Option<String>>,
+    /// 本次会话推理运行时不可用原因（onnxruntime 变体缺失/加载失败；非空 =
+    /// 语义功能整体降级：索引不装配、搜索无语义流。inference_info 消费）
+    pub runtime_missing: std::sync::Mutex<Option<String>>,
 }
 
 struct SystemClock;
@@ -67,6 +70,7 @@ impl AppState {
             indexers: Arc::new(std::sync::RwLock::new(Vec::new())),
             ep,
             ep_degraded: std::sync::Mutex::new(None),
+            runtime_missing: std::sync::Mutex::new(None),
         }
     }
 

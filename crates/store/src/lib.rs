@@ -608,6 +608,60 @@ impl Store {
         Ok(())
     }
 
+    /// 清空某工作区全部资产在该索引的向量（重新向量化：worker 轮询自动重嵌）；
+    /// 返回清掉的行数
+    pub fn clear_embeddings_for_folder(&self, index_id: i64, folder_id: i64) -> Result<u32> {
+        let table = self.vec_table(index_id)?;
+        let n = self.conn.execute(
+            &format!(
+                "DELETE FROM {table} WHERE asset_id IN
+                 (SELECT asset_id FROM assets WHERE folder_id = ?1)"
+            ),
+            params![folder_id],
+        )?;
+        Ok(n as u32)
+    }
+
+    /// 清空指定资产集合在**所有**索引的向量（单张/批量重新向量化）；返回清掉的行数
+    pub fn clear_embeddings_of_assets(&self, asset_ids: &[i64]) -> Result<u32> {
+        if asset_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut n = 0u32;
+        for idx in self.list_indexes()? {
+            let table = self.vec_table(idx.index_id)?;
+            let placeholders = asset_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            n += self
+                .conn
+                .execute(
+                    &format!("DELETE FROM {table} WHERE asset_id IN ({placeholders})"),
+                    rusqlite::params_from_iter(asset_ids.iter()),
+                )
+                .map(|v| v as u32)?;
+        }
+        Ok(n)
+    }
+
+    /// 工作区维度已嵌计数（进度卡用）：该工作区 ready 资产中已有该索引向量的数量
+    pub fn embedded_count_of_folder(&self, index_id: i64, folder_id: i64) -> Result<i64> {
+        let table = self.vec_table(index_id)?;
+        let sql = format!(
+            "SELECT COUNT(*) FROM assets a
+             JOIN {table} v ON v.asset_id = a.asset_id
+             WHERE a.folder_id = ?1 AND a.status = 'ready'"
+        );
+        Ok(self.conn.query_row(&sql, params![folder_id], |r| r.get(0))?)
+    }
+
+    /// 工作区 ready 资产总数（进度卡分母）
+    pub fn ready_count_of_folder(&self, folder_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM assets WHERE folder_id = ?1 AND status = 'ready'",
+            params![folder_id],
+            |r| r.get(0),
+        )?)
+    }
+
     /// KNN 检索：返回 (asset_id, distance)；f32 向量以 blob 绑定
     pub fn knn_search(&self, index_id: i64, query: &[f32], k: u32) -> Result<Vec<(i64, f32)>> {
         let k = k.clamp(1, 1000);

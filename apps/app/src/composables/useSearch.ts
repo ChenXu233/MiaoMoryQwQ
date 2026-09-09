@@ -9,6 +9,7 @@ const results = ref<SearchHit[] | null>(null);
 const elapsedLabel = ref("");
 const searchError = ref(false);
 const pendingIndexing = ref(0); // 待建索引数（结果头/空结果提示用，规格 0007 §1）
+const semanticReady = ref(true); // 搜索响应 model_ready（indexer 未装配 = false，语义流整体停用）
 const spView = ref<"grid" | "list">("grid");
 let timer: number | undefined;
 let seq = 0;
@@ -37,10 +38,12 @@ async function run(immediate: boolean) {
       if (res.status === "ok") {
         results.value = res.data.items;
         pendingIndexing.value = res.data.pending_indexing;
+        semanticReady.value = res.data.model_ready;
         searchError.value = false;
       } else {
         results.value = [];
         pendingIndexing.value = 0;
+        semanticReady.value = false;
         searchError.value = true;
       }
     } finally {
@@ -63,6 +66,7 @@ export function useSearch() {
     elapsedLabel,
     searchError,
     pendingIndexing,
+    semanticReady,
     spView,
     run,
     clear: () => {
@@ -70,6 +74,7 @@ export function useSearch() {
       results.value = null;
       searchError.value = false;
       pendingIndexing.value = 0;
+      semanticReady.value = true;
     },
   };
 }

@@ -39,6 +39,13 @@ export const commands = {
 } | null) => typedError<SearchPage, string>(__TAURI_INVOKE("search_assets", { query, topK, filters })),
 	/**  重建全部向量索引（模型变更/量化策略变更时）；worker 轮询发现空队列后全量重嵌 */
 	reindexAll: () => typedError<number, string>(__TAURI_INVOKE("reindex_all")),
+	/**
+	 *  重建某工作区的全部向量（所有 active 索引）；worker 轮询自动重嵌，进度经
+	 *  EmbedProgressEvent 逐张可见。返回清掉的向量数。重建期间该工作区语义搜索暂缺。
+	 */
+	reindexFolder: (folderId: number) => typedError<number, string>(__TAURI_INVOKE("reindex_folder", { folderId })),
+	/**  重新向量化指定资产（灯箱单张/网格批量共用）；worker 轮询自动重嵌。返回清掉的向量数。 */
+	reindexAssets: (assetIds: number[]) => typedError<number, string>(__TAURI_INVOKE("reindex_assets", { assetIds })),
 	dataInfo: () => __TAURI_INVOKE<DataInfo>("data_info"),
 	/**  用系统文件管理器打开数据目录；目录丢失时重建后重试一次（规格 0006 §3.3） */
 	openDataFolder: () => typedError<null, string>(__TAURI_INVOKE("open_data_folder")),
@@ -53,6 +60,11 @@ export const commands = {
 	reportOriginalMissing: (assetId: number) => typedError<null, string>(__TAURI_INVOKE("report_original_missing", { assetId })),
 	assetDetail: (assetId: number) => typedError<AssetDetail, string>(__TAURI_INVOKE("asset_detail", { assetId })),
 	storageUsage: () => typedError<StorageUsage, string>(__TAURI_INVOKE("storage_usage")),
+	/**
+	 *  各工作区向量化进度快照（EmbedCard 冷启动兜底；运行中以 EmbedProgressEvent 为准）。
+	 *  口径 = 第一套 active 索引（与侧栏 pending_index 徽标一致）。
+	 */
+	embedStatus: () => typedError<FolderEmbedStatus[], string>(__TAURI_INVOKE("embed_status")),
 	inferenceInfo: () => __TAURI_INVOKE<InferenceInfo>("inference_info"),
 	/**  切换推理后端：写 config.inference_ep，重启生效（spec 0008 §3.2） */
 	setInferenceEp: (ep: string) => typedError<null, string>(__TAURI_INVOKE("set_inference_ep", { ep })),
@@ -125,9 +137,18 @@ export type DeleteReport = {
 	missing: number,
 };
 
+/**  向量化进度（每张写完发一次）：进度卡按工作区分组逐张推进 */
 export type EmbedProgressEvent = {
+	/**  该索引全库已嵌入资产数（绝对值） */
 	done: number,
+	/**  该索引全库应嵌总数（done + 队列剩余，仅在线工作区；冷却中的恒败项不计） */
 	total: number,
+	/**  本次会话累计解码失败数（源文件不可读等；重启清零） */
+	failed: number,
+	/**  刚完成这张的归属工作区（-1 = 与本事件无关的内部更新） */
+	folder_id: number,
+	/**  刚完成这张的文件名（进度卡逐张滚动展示） */
+	file_name: string,
 };
 
 export type EpOption = {
@@ -143,6 +164,18 @@ export type FailedItem = {
 	asset_id: number,
 	path: string,
 	error_code: string | null,
+};
+
+/**  单工作区的向量化进度（进度卡按工作区分组展示） */
+export type FolderEmbedStatus = {
+	folder_id: number,
+	label: string | null,
+	/**  online | offline | missing（非 online 的待嵌项不会推进，前端标注「源离线」） */
+	status: string,
+	/**  ready 资产总数（分母） */
+	total: number,
+	/**  已有向量的 ready 资产数（分子） */
+	done: number,
 };
 
 /**  文件夹（工作区）快照 */
@@ -216,6 +249,11 @@ export type InferenceInfo = {
 	effective_ep: string,
 	/**  非空 = 本次会话发生过降级（所选后端不可用），前端展示原因 */
 	degraded_reason: string | null,
+	/**
+	 *  非空 = 推理运行时整体不可用（变体缺失/清单损坏）：语义搜索与建索引停用，
+	 *  其余功能照常；前端以此区分「降级但可用」与「语义功能停用」
+	 */
+	runtime_missing: string | null,
 	options: EpOption[],
 	/**  所选变体的运行时是否就绪（CUDA 下载/导入完成） */
 	runtime_ready: boolean,

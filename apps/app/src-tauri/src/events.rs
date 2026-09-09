@@ -44,10 +44,19 @@ pub struct ModelDownloadProgressEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 pub struct ModelReadyEvent {}
 
+/// 向量化进度（每张写完发一次）：进度卡按工作区分组逐张推进
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 pub struct EmbedProgressEvent {
+    /// 该索引全库已嵌入资产数（绝对值）
     pub done: i32,
+    /// 该索引全库应嵌总数（done + 队列剩余，仅在线工作区；冷却中的恒败项不计）
     pub total: i32,
+    /// 本次会话累计解码失败数（源文件不可读等；重启清零）
+    pub failed: i32,
+    /// 刚完成这张的归属工作区（-1 = 与本事件无关的内部更新）
+    pub folder_id: i32,
+    /// 刚完成这张的文件名（进度卡逐张滚动展示）
+    pub file_name: String,
 }
 
 /// 来源文件夹状态变化（online/offline/missing）→ 侧栏状态点与灯箱状态条刷新

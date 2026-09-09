@@ -183,6 +183,8 @@ pub async fn search_assets(
     let mut semantic_streams: Vec<Vec<u64>> = Vec::new();
     for ix in &indexers {
         let Ok(qvec) = ix.embed_text(trimmed) else {
+            // 静默吞曾让"语义流故障"与"真无结果"不可区分（搜'花'返回空的无声根因之一）
+            tracing::warn!(index_id = ix.index_id(), "查询文本编码失败，跳过该路语义流");
             continue;
         };
         // 单索引故障只降级该路语义流，不拖垮整个搜索（与 embed_text 失败 continue 同策）
@@ -309,4 +311,40 @@ pub async fn reindex_all(state: State<'_, AppState>) -> Result<i32, String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(total as i32)
+}
+
+/// 重建某工作区的全部向量（所有 active 索引）；worker 轮询自动重嵌，进度经
+/// EmbedProgressEvent 逐张可见。返回清掉的向量数。重建期间该工作区语义搜索暂缺。
+#[tauri::command]
+#[specta::specta]
+pub async fn reindex_folder(state: State<'_, AppState>, folder_id: i32) -> Result<i32, String> {
+    let store = store_at(&state)?;
+    let mut total = 0i64;
+    for idx in store.list_active_indexes().map_err(|e| e.to_string())? {
+        let n = store
+            .clear_embeddings_for_folder(idx.index_id, i64::from(folder_id))
+            .map_err(|e| e.to_string())?;
+        total += i64::from(n);
+    }
+    tracing::info!(folder_id, cleared = total, "工作区向量已清空，等待重嵌");
+    Ok(i32::try_from(total).unwrap_or(i32::MAX))
+}
+
+/// 重新向量化指定资产（灯箱单张/网格批量共用）；worker 轮询自动重嵌。返回清掉的向量数。
+#[tauri::command]
+#[specta::specta]
+pub async fn reindex_assets(
+    state: State<'_, AppState>,
+    asset_ids: Vec<i32>,
+) -> Result<i32, String> {
+    if asset_ids.is_empty() {
+        return Ok(0);
+    }
+    let ids: Vec<i64> = asset_ids.iter().map(|v| i64::from(*v)).collect();
+    let store = store_at(&state)?;
+    let cleared = store
+        .clear_embeddings_of_assets(&ids)
+        .map_err(|e| e.to_string())?;
+    tracing::info!(count = ids.len(), cleared, "资产向量已清空，等待重嵌");
+    Ok(i32::try_from(cleared).unwrap_or(i32::MAX))
 }

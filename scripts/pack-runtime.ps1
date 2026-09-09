@@ -60,7 +60,9 @@ foreach ($kind in $Variants) {
             $v.files[0].size = $bytes
         }
     }
-    $json | ConvertTo-Json -Depth 10 | Set-Content $manifestPath -Encoding UTF8
+    # PS5.1 的 -Encoding UTF8 写 BOM，而 serde_json 拒绝 BOM——必须无 BOM 写入
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($manifestPath, ($json | ConvertTo-Json -Depth 10), $utf8NoBom)
     Write-Host "[manifest] 已回填 $kind 条目"
 }
 

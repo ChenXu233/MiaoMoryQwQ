@@ -263,3 +263,49 @@ fn folder_info(store: &mm_store::Store, folder_id: i64) -> Result<FolderInfo, St
         pending_index: pending_index_of(store, folder_id),
     })
 }
+
+/// 单工作区的向量化进度（进度卡按工作区分组展示）
+#[derive(Debug, Clone, Serialize, specta::Type)]
+pub struct FolderEmbedStatus {
+    pub folder_id: i32,
+    pub label: Option<String>,
+    /// online | offline | missing（非 online 的待嵌项不会推进，前端标注「源离线」）
+    pub status: String,
+    /// ready 资产总数（分母）
+    pub total: i32,
+    /// 已有向量的 ready 资产数（分子）
+    pub done: i32,
+}
+
+/// 各工作区向量化进度快照（EmbedCard 冷启动兜底；运行中以 EmbedProgressEvent 为准）。
+/// 口径 = 第一套 active 索引（与侧栏 pending_index 徽标一致）。
+#[tauri::command]
+#[specta::specta]
+pub fn embed_status(state: State<'_, AppState>) -> Result<Vec<FolderEmbedStatus>, String> {
+    let store = crate::commands::store_at(&state).map_err(mode_err)?;
+    let index_id = store
+        .list_active_indexes()
+        .map_err(mode_err)?
+        .first()
+        .map(|i| i.index_id);
+    let mut out = Vec::new();
+    for f in store.list_folders().map_err(mode_err)? {
+        let (total, done) = match index_id {
+            Some(iid) => (
+                store.ready_count_of_folder(f.folder_id).unwrap_or(0),
+                store
+                    .embedded_count_of_folder(iid, f.folder_id)
+                    .unwrap_or(0),
+            ),
+            None => (0, 0),
+        };
+        out.push(FolderEmbedStatus {
+            folder_id: i32::try_from(f.folder_id).unwrap_or(0),
+            label: f.label,
+            status: f.status,
+            total: i32::try_from(total).unwrap_or(i32::MAX),
+            done: i32::try_from(done).unwrap_or(i32::MAX),
+        });
+    }
+    Ok(out)
+}

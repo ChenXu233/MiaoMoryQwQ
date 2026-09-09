@@ -9,6 +9,9 @@ const finishNotice = ref<string | null>(null);
 const failedBanner = ref(false);
 const importError = ref<string | null>(null);
 let started = false;
+// 导入中节流刷新网格：新照片边导边显示（缩略图在 mark_ready 时已落盘，reload 安全）
+let gridThrottle = 0;
+const GRID_REFRESH_MS = 2000;
 
 async function startFolder(folder: string): Promise<boolean> {
   importError.value = null;
@@ -29,6 +32,11 @@ export function useImportJob(onActivity?: () => void) {
       job.value = e.payload;
       paused.value = false;
       finishNotice.value = null;
+      const now = Date.now();
+      if (now - gridThrottle > GRID_REFRESH_MS) {
+        gridThrottle = now;
+        window.dispatchEvent(new CustomEvent("mm-library-changed"));
+      }
     });
     void events.importPausedEvent.listen(() => (paused.value = true));
     void events.importResumedEvent.listen(() => (paused.value = false));
