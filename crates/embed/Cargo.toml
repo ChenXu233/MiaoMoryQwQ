@@ -13,13 +13,16 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 sha2 = "0.11"
 hex = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = "0.1"
 
 [target.'cfg(windows)'.dependencies]
-ort = { version = "=2.0.0-rc.13", features = ["directml"] }
+# load-dynamic（ADR-0014）：运行时按用户选择加载 onnxruntime.dll 变体；
+# cuda/directml feature 在其下仅门控 ep::Cuda/ep::DirectML 类型，不再参与链接
+ort = { version = "=2.0.0-rc.13", features = ["directml", "cuda", "load-dynamic"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 ort = { version = "=2.0.0-rc.13", features = ["coreml"] }

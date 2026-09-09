@@ -12,7 +12,11 @@ fn main() {
     let missing = manifest.missing_files(dir);
     assert!(missing.is_empty(), "缺文件: {missing:?}");
 
-    let embedder = mm_embed::ClipEmbedder::load(dir, &manifest, 1).expect("加载模型失败");
+    let (embedder, degraded) = mm_embed::ClipEmbedder::load(dir, &manifest, 1, Default::default())
+        .expect("加载模型失败");
+    if let Some(reason) = degraded {
+        println!("EP 降级: {reason}");
+    }
 
     // 8x8 渐变测试图
     let mut rgb = Vec::new();

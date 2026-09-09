@@ -9,8 +9,11 @@ mod embed_worker;
 mod events;
 mod folder_commands;
 mod folder_watcher;
+mod inference_commands;
 mod search_commands;
 mod state;
+
+use std::path::PathBuf;
 
 use tauri::{Manager, Wry};
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -18,7 +21,7 @@ use tauri_specta::{collect_commands, collect_events, Builder};
 use crate::events::{
     EmbedProgressEvent, FolderStatusChangedEvent, ImportFinishedEvent, ImportItemFailedEvent,
     ImportPausedEvent, ImportProgressEvent, ImportResumedEvent, ModelDownloadProgressEvent,
-    ModelReadyEvent,
+    ModelReadyEvent, ModelsImportedEvent, RuntimeDownloadProgressEvent, RuntimeReadyEvent,
 };
 use crate::state::AppState;
 
@@ -56,6 +59,11 @@ pub fn app_builder() -> Builder<Wry> {
             folder_commands::report_original_missing,
             folder_commands::asset_detail,
             folder_commands::storage_usage,
+            inference_commands::inference_info,
+            inference_commands::set_inference_ep,
+            inference_commands::download_runtime,
+            inference_commands::import_runtime,
+            inference_commands::import_models,
         ])
         .events(collect_events![
             ImportProgressEvent,
@@ -67,6 +75,9 @@ pub fn app_builder() -> Builder<Wry> {
             ModelReadyEvent,
             EmbedProgressEvent,
             FolderStatusChangedEvent,
+            RuntimeDownloadProgressEvent,
+            RuntimeReadyEvent,
+            ModelsImportedEvent,
         ])
 }
 
@@ -110,10 +121,69 @@ pub fn run() {
                 .allow_directory(paths.workspace_dir.clone(), true)
                 .ok();
 
+            // 推理后端（spec 0008 / ADR-0014）：config.inference_ep → EpKind，
+            // 进程最早处选定 onnxruntime 变体（一次性）；所选变体缺失/加载失败
+            // 回退自带 DML 变体并记入降级（config 不改写，修复环境重启即生效）
+            let (ep, runtime_degraded) = {
+                let cfg_value = paths.inference_ep.as_deref().unwrap_or("cpu");
+                let parsed = mm_embed::EpKind::parse(cfg_value).unwrap_or_else(|| {
+                    tracing::warn!(value = cfg_value, "inference_ep 配置值无效，按 CPU 处理");
+                    mm_embed::EpKind::Cpu
+                });
+                let mut degraded: Option<String> = None;
+                #[cfg(windows)]
+                {
+                    let mut candidates: Vec<PathBuf> = Vec::new();
+                    if parsed == mm_embed::EpKind::Cuda {
+                        candidates.push(paths.runtime_dir("cuda").join("onnxruntime.dll"));
+                    }
+                    candidates.push(paths.runtime_dir("dml").join("onnxruntime.dll"));
+                    if let Some(exe) =
+                        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                    {
+                        candidates.push(exe.join("runtime").join("dml").join("onnxruntime.dll"));
+                    }
+                    let mut loaded = false;
+                    let mut last_err: Option<String> = None;
+                    for cand in &candidates {
+                        if !cand.is_file() {
+                            continue;
+                        }
+                        match mm_embed::init_runtime_dylib(cand) {
+                            Ok(()) => {
+                                loaded = true;
+                                break;
+                            }
+                            Err(e) => last_err = Some(e),
+                        }
+                    }
+                    if !loaded {
+                        // 安装损坏的极端场景：无任何可用变体时 ort 惰性加载必然失败，快速失败并说明
+                        let reason = last_err.unwrap_or_else(|| {
+                            "找不到 onnxruntime 变体（自带 runtime\\dml 缺失，安装可能损坏）".into()
+                        });
+                        panic!("推理运行时初始化失败：{reason}");
+                    }
+                    if parsed == mm_embed::EpKind::Cuda && !candidates[0].is_file() {
+                        degraded =
+                            Some("CUDA 运行时未下载/导入，本次以自带 DirectML 变体启动".into());
+                    }
+                }
+                #[cfg(not(windows))]
+                mm_embed::init_runtime_dylib(std::path::Path::new("")).ok();
+                if let Some(reason) = &degraded {
+                    tracing::warn!(reason, "推理运行时降级");
+                }
+                (parsed, degraded)
+            };
+
             // 分发源：config.hf_endpoint 覆盖优先，默认 GitHub Release（规格 0004 / ADR-0010）
             let endpoints = vec![paths.hf_endpoint.clone()];
             let model_dir = paths.model_dir.clone();
-            app.manage(AppState::build(app.handle(), paths, model_dir, endpoints));
+            app.manage(AppState::build(app.handle(), paths, model_dir, endpoints, ep));
+            if let Some(reason) = runtime_degraded {
+                *app.state::<AppState>().ep_degraded.lock().unwrap() = Some(reason);
+            }
 
             // 模型已在本地则直接加载（重启后无需再下载）
             {

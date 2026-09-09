@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "onnxruntime": "1.28.0",
+  "variants": [
+    {
+      "kind": "cpu",
+      "files": [
+        {
+          "name": "onnxruntime-win-x64-1.28.0.zip",
+          "sha256": "",
+          "size": 78796801
+        }
+      ],
+      "expected_dlls": ["onnxruntime.dll", "onnxruntime_providers_shared.dll"]
+    },
+    {
+      "kind": "cuda",
+      "files": [
+        {
+          "name": "onnxruntime-win-x64-gpu_cuda13-1.28.0.zip",
+          "sha256": "",
+          "size": 364895958
+        }
+      ],
+      "expected_dlls": ["onnxruntime.dll", "onnxruntime_providers_shared.dll", "onnxruntime_providers_cuda.dll"]
+    }
+  ]
+}

@@ -17,6 +17,8 @@ pub const DB_FILE_NAME: &str = "index.db";
 pub const THUMBS_DIR_NAME: &str = "thumbs";
 pub const MODELS_DIR_NAME: &str = "models";
 pub const LOGS_DIR_NAME: &str = "logs";
+/// 推理运行时变体根目录（spec 0008 / ADR-0014）：`<数据根>/runtime/{dml,cuda}/`
+pub const RUNTIME_DIR_NAME: &str = "runtime";
 /// 口袋式数据目录名（位于安装目录下，ADR-0011）
 pub const DATA_DIR_NAME: &str = "data";
 /// 手动强制便携的空标记文件（放在 exe 旁，ADR-0011）
@@ -49,6 +51,8 @@ pub struct AppConfig {
     pub hf_endpoint: Option<String>,
     /// 数据根覆盖（ADR-0011）：设置"更改数据位置"写入此字段
     pub data_dir: Option<PathBuf>,
+    /// 推理执行提供者（spec 0008）：cpu | directml | cuda；缺省 None = cpu
+    pub inference_ep: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -92,6 +96,9 @@ pub struct ResolvedPaths {
     pub config_path: PathBuf,
     /// 配置存在但解析失败时的错误（不阻断启动，回退默认值；setup 初始化日志后应记录）
     pub config_load_error: Option<String>,
+    /// 推理后端原始配置值（spec 0008，None = 未配置 = cpu）；platform 不解析语义，
+    /// 由 app 层 parse 成 mm-embed 的 EpKind（分层：platform 不依赖 embed）
+    pub inference_ep: Option<String>,
 }
 
 impl ResolvedPaths {
@@ -115,6 +122,17 @@ impl ResolvedPaths {
         self.data_root
             .clone()
             .unwrap_or_else(|| self.workspace_dir.clone())
+    }
+    /// 推理运行时变体目录（spec 0008）：`<数据根>/runtime/<ep>`；经典布局落 AppData
+    pub fn runtime_dir(&self, ep: &str) -> PathBuf {
+        match (&self.data_root, &self.app_dir) {
+            (Some(root), _) => root.join(RUNTIME_DIR_NAME).join(ep),
+            (None, Some(app)) => app.join(RUNTIME_DIR_NAME).join(ep),
+            (None, None) => app_data_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(RUNTIME_DIR_NAME)
+                .join(ep),
+        }
     }
     pub fn is_portable(&self) -> bool {
         self.data_root.is_some()
@@ -263,6 +281,7 @@ fn rooted(
         app_dir: None,
         config_path,
         config_load_error,
+        inference_ep: cfg.inference_ep.clone(),
     }
 }
 
@@ -296,6 +315,7 @@ fn classic(
         app_dir: app_dir.map(|p| p.to_path_buf()),
         config_path,
         config_load_error,
+        inference_ep: cfg.inference_ep.clone(),
     })
 }
 
@@ -609,6 +629,7 @@ mod tests {
             model_dir: Some(PathBuf::from("/models")),
             hf_endpoint: Some("https://hf-mirror.com".into()),
             data_dir: Some(PathBuf::from("D:\\索引数据")),
+            ..Default::default()
         };
         let raw = toml::to_string_pretty(&cfg).unwrap();
         let parsed: AppConfig = toml::from_str(&raw).unwrap();

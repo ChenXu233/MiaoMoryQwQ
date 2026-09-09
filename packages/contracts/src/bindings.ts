@@ -53,6 +53,15 @@ export const commands = {
 	reportOriginalMissing: (assetId: number) => typedError<null, string>(__TAURI_INVOKE("report_original_missing", { assetId })),
 	assetDetail: (assetId: number) => typedError<AssetDetail, string>(__TAURI_INVOKE("asset_detail", { assetId })),
 	storageUsage: () => typedError<StorageUsage, string>(__TAURI_INVOKE("storage_usage")),
+	inferenceInfo: () => __TAURI_INVOKE<InferenceInfo>("inference_info"),
+	/**  切换推理后端：写 config.inference_ep，重启生效（spec 0008 §3.2） */
+	setInferenceEp: (ep: string) => typedError<null, string>(__TAURI_INVOKE("set_inference_ep", { ep })),
+	/**  下载所选变体的运行时包（后台线程；断点续传 + 校验 + 解压，spec 0008 §3.3） */
+	downloadRuntime: (kind: string) => typedError<null, string>(__TAURI_INVOKE("download_runtime", { kind })),
+	/**  从本地 zip 导入运行时（spec 0008 §3.4）；返回是否通过清单校验（false = 未校验来源） */
+	importRuntime: (path: string) => typedError<boolean, string>(__TAURI_INVOKE("import_runtime", { path })),
+	/**  从本地目录/zip 导入模型（spec 0008 §3.5）；全部匹配才落文件，否则返回明细 */
+	importModels: (path: string) => typedError<ImportReport, string>(__TAURI_INVOKE("import_models", { path })),
 };
 
 /** Events */
@@ -66,6 +75,9 @@ export const events = {
 	importResumedEvent: makeEvent<ImportResumedEvent>("import-resumed-event"),
 	modelDownloadProgressEvent: makeEvent<ModelDownloadProgressEvent>("model-download-progress-event"),
 	modelReadyEvent: makeEvent<ModelReadyEvent>("model-ready-event"),
+	modelsImportedEvent: makeEvent<ModelsImportedEvent>("models-imported-event"),
+	runtimeDownloadProgressEvent: makeEvent<RuntimeDownloadProgressEvent>("runtime-download-progress-event"),
+	runtimeReadyEvent: makeEvent<RuntimeReadyEvent>("runtime-ready-event"),
 };
 
 /* Types */
@@ -118,6 +130,15 @@ export type EmbedProgressEvent = {
 	total: number,
 };
 
+export type EpOption = {
+	kind: string,
+	/**  检测层面可用（DirectML：Windows；CUDA：运行时就绪） */
+	available: boolean,
+	/**  检测到独立显卡且变体就绪时提示推荐 */
+	recommended: boolean,
+	hint: string,
+};
+
 export type FailedItem = {
 	asset_id: number,
 	path: string,
@@ -166,6 +187,12 @@ export type ImportProgressEvent = {
 	eta_seconds: number | null,
 };
 
+export type ImportReport = {
+	imported: number,
+	skipped: number,
+	mismatched: ModelFileIssue[],
+};
+
 export type ImportResumedEvent = {
 	job_id: number,
 };
@@ -182,10 +209,29 @@ export type IndexUsage = {
 	approx_bytes: number | null,
 };
 
+export type InferenceInfo = {
+	/**  用户选择（config） */
+	current_ep: string,
+	/**  本次会话实际装配所用后端（降级后为 cpu） */
+	effective_ep: string,
+	/**  非空 = 本次会话发生过降级（所选后端不可用），前端展示原因 */
+	degraded_reason: string | null,
+	options: EpOption[],
+	/**  所选变体的运行时是否就绪（CUDA 下载/导入完成） */
+	runtime_ready: boolean,
+	/**  检测到独立显卡（NVIDIA/AMD 独显特征名，仅文案提示不作开关） */
+	gpu_detected: boolean,
+};
+
 export type ModelDownloadProgressEvent = {
 	file: string,
 	received: number,
 	total: number,
+};
+
+export type ModelFileIssue = {
+	name: string,
+	reason: string,
 };
 
 export type ModelReadyEvent = Record<string, never>;
@@ -195,6 +241,18 @@ export type ModelStatus = {
 	loaded: boolean,
 	files_missing: string[],
 };
+
+/**  模型本地导入完成且装配成功 */
+export type ModelsImportedEvent = Record<string, never>;
+
+/**  运行时包下载进度（spec 0008 §3.3；复用模型下载进度模式） */
+export type RuntimeDownloadProgressEvent = {
+	received: number,
+	total: number,
+};
+
+/**  运行时包就绪（下载/导入完成并通过校验） */
+export type RuntimeReadyEvent = Record<string, never>;
 
 /**  检索过滤器（日期区间 / 类型） */
 export type SearchFilters = {

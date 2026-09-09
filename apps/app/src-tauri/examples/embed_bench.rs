@@ -31,9 +31,28 @@ impl Clock for SystemClock {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
-        eprintln!("用法: embed_bench <源目录> <工作区目录> <模型目录>");
+        eprintln!("用法: embed_bench <源目录> <工作区目录> <模型目录> [ep=cpu|directml|cuda]");
         std::process::exit(1);
     }
+    let ep = args
+        .get(4)
+        .map(|s| s.trim_start_matches("ep=").to_string())
+        .and_then(|s| mm_embed::EpKind::parse(&s))
+        .unwrap_or_default();
+
+    // 与 app 同链路：进程早期选定 onnxruntime 变体（默认 exe 旁 runtime/dml/，ORT_DYLIB_PATH 可覆盖）
+    let dylib = std::env::var_os("ORT_DYLIB_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("runtime")
+                .join("dml")
+                .join("onnxruntime.dll")
+        });
+    mm_embed::init_runtime_dylib(&dylib).expect("加载 onnxruntime 变体失败");
     let source = Path::new(&args[1]).to_path_buf();
     let ws = Path::new(&args[2]).to_path_buf();
     let model_dir = Path::new(&args[3]).to_path_buf();
@@ -79,7 +98,11 @@ fn main() {
     // ---- 复刻 embed_worker 循环 ----
     let manifest = manifest::manifest();
     let t_load = Instant::now();
-    let embedder = mm_embed::ClipEmbedder::load(&model_dir, &manifest, index_id).expect("加载模型");
+    let (embedder, degraded) =
+        mm_embed::ClipEmbedder::load(&model_dir, &manifest, index_id, ep).expect("加载模型");
+    if let Some(reason) = degraded {
+        println!("EP 降级: {reason}");
+    }
     println!("模型加载 {:?}", t_load.elapsed());
 
     let store = Store::open(&db_path).unwrap();

@@ -57,3 +57,18 @@ pub struct FolderStatusChangedEvent {
     /// online | offline | missing
     pub status: String,
 }
+
+/// 运行时包下载进度（spec 0008 §3.3；复用模型下载进度模式）
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct RuntimeDownloadProgressEvent {
+    pub received: i32,
+    pub total: i32,
+}
+
+/// 运行时包就绪（下载/导入完成并通过校验）
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct RuntimeReadyEvent {}
+
+/// 模型本地导入完成且装配成功
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct ModelsImportedEvent {}

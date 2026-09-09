@@ -26,6 +26,10 @@ pub struct AppState {
     pub model_endpoints: Vec<String>,
     /// 已加载的索引器集合（ADR-0013；下载完成后由装配层填充，可多套并存）
     pub indexers: Arc<std::sync::RwLock<Vec<Arc<dyn mm_core::Indexer>>>>,
+    /// 用户选择的推理后端（config.toml inference_ep，缺省 CPU；spec 0008）
+    pub ep: mm_embed::EpKind,
+    /// 最近一次装配的 EP 降级原因（所选 EP 失败回落 CPU 时非空，inference_info 消费）
+    pub ep_degraded: std::sync::Mutex<Option<String>>,
 }
 
 struct SystemClock;
@@ -44,6 +48,7 @@ impl AppState {
         workspace: ResolvedPaths,
         model_dir: PathBuf,
         model_endpoints: Vec<String>,
+        ep: mm_embed::EpKind,
     ) -> Self {
         let sink = TauriSink::new(app.clone());
         let engine = ImportEngine::new(
@@ -60,6 +65,8 @@ impl AppState {
             model_dir,
             model_endpoints,
             indexers: Arc::new(std::sync::RwLock::new(Vec::new())),
+            ep,
+            ep_degraded: std::sync::Mutex::new(None),
         }
     }
 
@@ -84,10 +91,14 @@ impl AppState {
             {
                 continue;
             }
-            match mm_embed::ClipEmbedder::load(&self.model_dir, &manifest, meta.index_id) {
-                Ok(ix) => {
+            match mm_embed::ClipEmbedder::load(&self.model_dir, &manifest, meta.index_id, self.ep) {
+                Ok((ix, degraded)) => {
+                    if let Some(reason) = degraded {
+                        tracing::warn!(index_id = meta.index_id, slug = %meta.slug, reason, "推理后端降级");
+                        *self.ep_degraded.lock().unwrap() = Some(reason);
+                    }
                     // 成功也留痕：实机出现过「已就绪→未就绪」静默翻转且日志无据可查
-                    tracing::info!(index_id = meta.index_id, slug = %meta.slug, "索引装配成功");
+                    tracing::info!(index_id = meta.index_id, slug = %meta.slug, ep = self.ep.as_str(), "索引装配成功");
                     loaded.push(Arc::new(ix));
                 }
                 Err(_) => return Err(vec!["load_failed".to_string()]),
