@@ -86,9 +86,9 @@ fn main() {
     let t_all = Instant::now();
     let mut batch_no = 0u32;
     let mut total_read_bytes = 0u64;
-    let mut total_decode_ms = 0u64;
     let mut total_infer_ms = 0u64;
     let mut total_imgs = 0u64;
+    // 流水化（与新 embed_worker 一致）：解码线程产 8 张组 → 有界通道 → 本线程推理
     loop {
         let pending = store
             .list_ready_without_embedding(index_id, 32)
@@ -96,76 +96,73 @@ fn main() {
         if pending.is_empty() {
             break;
         }
-        let t_read = Instant::now();
-        let mut decoded: Vec<(i64, mm_core::DecodedImage)> = Vec::new();
-        let mut bytes_read = 0u64;
-        for (asset_id, _, sha256) in &pending {
-            if let Ok(Some(src)) = store.find_embedding_source(index_id, sha256, *asset_id) {
-                let _ = store.copy_embedding(index_id, src, *asset_id);
-                continue;
-            }
-            let path = store
-                .get_asset(*asset_id)
-                .ok()
-                .flatten()
-                .map(|row| std::path::PathBuf::from(row.storage_key));
-            let Some(path) = path else { continue };
-            let f0 = Instant::now();
-            match mm_pipeline::decode::decode_photo(&path) {
-                Ok(photo) => {
-                    bytes_read += std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    decoded.push((*asset_id, photo.image));
-                    let _ = f0;
-                }
-                Err(_) => continue,
-            }
-        }
-        let read_ms = t_read.elapsed().as_millis() as u64;
-        total_read_bytes += bytes_read;
-        total_decode_ms += read_ms;
-
-        let t_infer = Instant::now();
-        let mut written = 0usize;
-        if !decoded.is_empty() {
-            let images: Vec<mm_core::DecodedImage> =
-                decoded.iter().map(|(_, img)| img.clone()).collect();
-            if let Ok(vectors) = embedder.embed_images(&images) {
-                for ((asset_id, _), vec) in decoded.iter().zip(vectors) {
-                    if store.insert_embedding(index_id, *asset_id, &vec).is_ok() {
-                        written += 1;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(Vec<(i64, mm_core::DecodedImage)>, u64)>(1);
+        let decode_path = db_path.clone();
+        let pending_clone = pending.clone();
+        let decoder = std::thread::Builder::new()
+            .name("bench-decode".into())
+            .spawn(move || {
+                let dstore = Store::open(&decode_path).unwrap();
+                let mut group: Vec<(i64, mm_core::DecodedImage)> = Vec::new();
+                let mut bytes_read = 0u64;
+                for (asset_id, _, _) in &pending_clone {
+                    let path = dstore
+                        .get_asset(*asset_id)
+                        .ok()
+                        .flatten()
+                        .map(|row| std::path::PathBuf::from(row.storage_key));
+                    let Some(path) = path else { continue };
+                    match mm_pipeline::decode::decode_photo(&path) {
+                        Ok(photo) => {
+                            bytes_read += std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                            group.push((*asset_id, photo.image));
+                        }
+                        Err(_) => continue,
+                    }
+                    if group.len() >= 8 {
+                        if tx
+                            .send((std::mem::take(&mut group), std::mem::take(&mut bytes_read)))
+                            .is_err()
+                        {
+                            return;
+                        }
                     }
                 }
+                if !group.is_empty() {
+                    let _ = tx.send((group, bytes_read));
+                }
+            })
+            .unwrap();
+
+        for (group, bytes_read) in rx {
+            total_read_bytes += bytes_read;
+            total_imgs += group.len() as u64;
+            batch_no += 1;
+            let t_infer = Instant::now();
+            let images: Vec<mm_core::DecodedImage> =
+                group.iter().map(|(_, img)| img.clone()).collect();
+            let vectors = embedder.embed_images(&images).expect("推理失败");
+            for ((asset_id, _), vec) in group.iter().zip(vectors) {
+                let _ = store.insert_embedding(index_id, *asset_id, &vec);
             }
+            let infer_ms = t_infer.elapsed().as_millis() as u64;
+            total_infer_ms += infer_ms;
+            println!(
+                "组 {}: {} 张 | 读 {} MB（流水化，与推理重叠）| 推理 {} ms",
+                batch_no,
+                group.len(),
+                bytes_read / (1024 * 1024),
+                infer_ms
+            );
         }
-        let infer_ms = t_infer.elapsed().as_millis() as u64;
-        total_infer_ms += infer_ms;
-        total_imgs += decoded.len() as u64;
-        batch_no += 1;
-        println!(
-            "批 {}: {} 张 | 读取+全图解码 {} ms ({} MB, {} MB/s) | 推理 {} ms",
-            batch_no,
-            decoded.len(),
-            read_ms,
-            bytes_read / (1024 * 1024),
-            if read_ms > 0 {
-                bytes_read / 1024 / read_ms.max(1) * 1000 / 1024
-            } else {
-                0
-            },
-            infer_ms
-        );
-        if written == 0 {
-            println!("毒丸断路触发");
-            break;
-        }
+        let _ = decoder.join();
     }
     let wall = t_all.elapsed().as_secs_f64();
     println!(
-        "嵌入阶段完成: {} 张 / {} 批, 墙钟 {:.1}s | 读取+解码累计 {:.1}s | 推理累计 {:.1}s | F: 平均读速率 {:.2} MB/s",
+        "嵌入阶段完成: {} 张 / {} 组, 墙钟 {:.1}s | 推理累计 {:.1}s | F: 平均读速率 {:.2} MB/s（读匀速摊满全程）",
         total_imgs,
         batch_no,
         wall,
-        total_decode_ms as f64 / 1000.0,
         total_infer_ms as f64 / 1000.0,
         total_read_bytes as f64 / 1024.0 / 1024.0 / wall.max(0.001)
     );
