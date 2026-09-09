@@ -1,107 +1,47 @@
 <script setup lang="ts">
-// 设置页（UI 对齐 v5：模型并入设置；外观/语义模型/数据位置/来源文件夹/存储占用/失败文件）。
-// 迁移自 DataSettings 对话框（对话框形态退役，设置入口 = 侧栏左下齿轮）。
-import { computed, onMounted, ref } from "vue";
-import { open as pickDirectory } from "@tauri-apps/plugin-dialog";
-import {
-  commands,
-  type DataInfo,
-  type FailedItem,
-  type StorageUsage,
-} from "@miaomory/contracts";
-import { useTheme } from "../composables/useTheme";
-import { useModelStatus } from "../composables/useModelStatus";
-import { useFolders } from "../composables/useFolders";
-import { formatBytes } from "../lib/format";
+// 设置页（spec 0006 §3.0 二级分类 IA，2026-09-09 所有者裁定分门别类）：
+// 左侧分类导航 + 右侧内容面板；<720px 导航收顶部横排（styles.css 媒体查询）。
+// 位置记忆 localStorage["mm-settings-section"]（先例 mm-rail）；默认落点「外观」。
+import { onMounted, ref } from "vue";
+import AppearanceSection from "../components/settings/AppearanceSection.vue";
+import ModelIndexSection from "../components/settings/ModelIndexSection.vue";
+import DataSection from "../components/settings/DataSection.vue";
 
-const { theme, setTheme } = useTheme();
-const model = useModelStatus();
-const { folders, recheck, relocate } = useFolders();
+const SECTIONS = [
+  { key: "appearance", label: "外观" },
+  { key: "index", label: "模型与推理" },
+  { key: "data", label: "数据与存储" },
+] as const;
 
-const info = ref<DataInfo | null>(null);
-const usage = ref<StorageUsage | null>(null);
-const failed = ref<FailedItem[] | null>(null);
-const notice = ref<string | null>(null);
-const error = ref<string | null>(null);
-const changed = ref(false);
-const folderNotice = ref<string | null>(null);
-const folderError = ref<string | null>(null);
+type SectionKey = (typeof SECTIONS)[number]["key"];
+const STORAGE_KEY = "mm-settings-section";
 
-const modeLabel = computed(() => {
-  switch (info.value?.mode) {
-    case "env":
-      return "开发模式 · 数据位置由环境变量指定";
-    case "portable":
-      return "口袋模式 · 数据随应用携带";
-    case "rooted":
-      return "口袋模式 · 自定义数据位置";
-    default:
-      return "标准模式 · 数据在文档目录";
+function loadInitial(): SectionKey {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved && SECTIONS.some((s) => s.key === saved)) return saved as SectionKey;
+  } catch {
+    /* localStorage 不可用：静默回落默认 */
   }
+  return "appearance";
+}
+
+const current = ref<SectionKey>(loadInitial());
+
+function select(key: SectionKey) {
+  current.value = key;
+  try {
+    localStorage.setItem(STORAGE_KEY, key);
+  } catch {
+    /* 忽略写入失败 */
+  }
+}
+
+onMounted(() => {
+  // 深链兜底：hash 形如 #settings/index 时定位分类（不进路由表，仅一次性解析）
+  const m = location.hash.match(/^#settings\/([\w-]+)$/);
+  if (m && SECTIONS.some((s) => s.key === m[1])) select(m[1] as SectionKey);
 });
-
-const modelState = computed<"missing" | "downloading" | "ready">(() => {
-  if (model.modelReady.value) return "ready";
-  if (model.downloading.value) return "downloading";
-  return "missing";
-});
-
-async function loadStatic() {
-  info.value = await commands.dataInfo();
-  const u = await commands.storageUsage();
-  if (u.status === "ok") usage.value = u.data;
-  const f = await commands.listFailedItems();
-  failed.value = f.status === "ok" ? f.data : [];
-}
-
-async function openDataFolder() {
-  error.value = null;
-  const res = await commands.openDataFolder();
-  if (res.status === "error") error.value = res.error;
-}
-
-async function changeLocation() {
-  error.value = null;
-  const dir = await pickDirectory({ directory: true, multiple: false });
-  if (typeof dir !== "string") return;
-  const res = await commands.setDataLocation(dir);
-  if (res.status === "ok") {
-    changed.value = true;
-    notice.value = "已记录新位置，重启 MiaoMory 后生效。";
-  } else {
-    error.value = res.error;
-  }
-}
-
-async function recheckFolder(folderId: number, label: string) {
-  folderError.value = null;
-  const f = await recheck(folderId);
-  if (f) {
-    folderNotice.value =
-      f.status === "online" ? `「${label}」已恢复在线。` : `「${label}」仍不可访问。`;
-  } else {
-    folderNotice.value = null;
-    folderError.value = "重检失败";
-  }
-}
-
-async function relocateFolder(folderId: number, label: string) {
-  folderError.value = null;
-  const dir = await pickDirectory({ directory: true, multiple: false });
-  if (typeof dir !== "string") return;
-  const res = await relocate(folderId, dir);
-  if (typeof res === "object") {
-    folderNotice.value = `已重新指定「${label}」的位置。`;
-  } else {
-    folderError.value = res;
-  }
-}
-
-function statusText(s: string): string {
-  return s === "online" ? "在线" : s === "offline" ? "离线" : "找不到路径";
-}
-
-onMounted(() => void loadStatic());
 </script>
 
 <template>
@@ -110,243 +50,24 @@ onMounted(() => void loadStatic());
       <h1 class="page-title">设置</h1>
       <p class="page-sub">外观与语言立即生效；数据与模型只保存在本机。</p>
 
-      <!-- 外观与语言 -->
-      <div class="card">
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-t">主题</div>
-            <div class="set-d">亮色 / 暗色，立即生效</div>
-          </div>
-          <div class="seg" role="group" aria-label="主题">
-            <button :class="{ on: theme === 'light' }" @click="setTheme('light')">亮色</button>
-            <button :class="{ on: theme === 'dark' }" @click="setTheme('dark')">暗色</button>
-          </div>
-        </div>
-        <div class="hr" />
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-t">语言</div>
-            <div class="set-d">界面显示语言（LATER：多语言未实现）</div>
-          </div>
-          <div class="seg" role="group" aria-label="语言">
-            <button class="on">简体中文</button>
-            <button disabled>English</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 语义模型（v5：并入设置） -->
-      <div class="card">
-        <div class="set-row" style="padding-top: 0">
-          <span class="st-dot" :class="{ ok: modelState === 'ready', dl: modelState === 'downloading', no: modelState === 'missing' }" />
-          <div class="set-info">
-            <div class="set-t">
-              {{
-                modelState === "ready"
-                  ? "语义模型已就绪"
-                  : modelState === "downloading"
-                    ? "正在下载语义模型"
-                    : "语义模型未就绪"
-              }}
-            </div>
-            <div class="set-d">
-              导入索引与搜索共用一套中文图文语义模型（约 200MB，仅一次）。
-            </div>
-          </div>
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="设置分类">
           <button
-            v-if="modelState === 'missing'"
-            class="btn-glass btn-primary"
-            @click="model.download()"
+            v-for="s in SECTIONS"
+            :key="s.key"
+            :class="{ on: current === s.key }"
+            :aria-current="current === s.key ? 'page' : undefined"
+            @click="select(s.key)"
           >
-            重试下载
+            {{ s.label }}
           </button>
-        </div>
-        <div v-if="model.downloading.value" class="mbar">
-          <i
-            :style="{
-              width:
-                model.downloading.value.total > 0
-                  ? `${Math.round((model.downloading.value.received / model.downloading.value.total) * 100)}%`
-                  : '0%',
-            }"
-          />
-        </div>
-        <div v-if="model.downloading.value" class="set-d num">
-          {{ model.downloading.value.file }}：
-          {{ Math.round(model.downloading.value.received / 1e6) }} /
-          {{ Math.round(model.downloading.value.total / 1e6) }} MB（已下载部分不会丢失）
-        </div>
-        <p class="set-d" style="margin: 10px 0 0">
-          🔒 模型只在本机运行，照片不会上传；下载可中断，已下载部分不会丢失。
-        </p>
-      </div>
+        </nav>
 
-      <!-- 数据位置 -->
-      <div class="card">
-        <div class="set-row" style="padding-top: 0">
-          <div class="set-info">
-            <div class="set-t">数据位置</div>
-            <div class="set-d">所有数据都保存在这台电脑上，MiaoMory 不会上传任何内容。</div>
-          </div>
-          <span v-if="info" class="mode-badge">{{ modeLabel }}</span>
+        <div class="settings-panel">
+          <AppearanceSection v-if="current === 'appearance'" />
+          <ModelIndexSection v-else-if="current === 'index'" />
+          <DataSection v-else />
         </div>
-        <div v-if="info" class="path-rows">
-          <div class="prow">
-            <span class="pinfo">
-              <span class="pl">数据文件夹</span>
-              <span class="pv">{{ info.data_folder }}</span>
-            </span>
-          </div>
-          <div class="prow">
-            <span class="pinfo">
-              <span class="pl">索引</span>
-              <span class="pv">{{ info.db_path }}</span>
-            </span>
-          </div>
-          <div class="prow">
-            <span class="pinfo">
-              <span class="pl">模型</span>
-              <span class="pv">{{ info.models_dir }}</span>
-            </span>
-          </div>
-        </div>
-        <p v-if="notice" role="status" class="set-d" style="color: var(--mm-success); margin-top: 10px">
-          {{ notice }}
-        </p>
-        <p v-if="error" role="alert" class="set-d" style="color: var(--mm-danger); margin-top: 10px">
-          {{ error }}
-        </p>
-        <div class="ops">
-          <span class="hint">更改数据位置后重启 MiaoMory 生效</span>
-          <button class="btn-glass btn-outline-glass" @click="openDataFolder">打开数据文件夹</button>
-          <button
-            class="btn-glass btn-primary"
-            :disabled="changed || !(info?.can_change ?? false)"
-            style="disabled: opacity 0.5"
-            @click="changeLocation"
-          >
-            更改数据位置…
-          </button>
-        </div>
-      </div>
-
-      <!-- 来源文件夹 -->
-      <div class="card">
-        <div class="set-row" style="padding-top: 0">
-          <div class="set-info">
-            <div class="set-t">来源文件夹</div>
-            <div class="set-d">文件夹不在线时，照片仍可浏览和搜索（用缩略图），只是看不到原图。</div>
-          </div>
-        </div>
-        <div v-if="folders.length" class="path-rows">
-          <div v-for="f in folders" :key="f.folder_id" class="prow">
-            <span
-              class="st-dot"
-              :class="{ ok: f.status === 'online', no: f.status === 'missing', dl: f.status === 'offline' }"
-              :aria-label="`文件夹${statusText(f.status)}`"
-              :style="f.status === 'offline' ? 'background: var(--mm-muted)' : undefined"
-            />
-            <span class="pinfo">
-              <span class="pv">{{ f.label || f.path }}</span>
-              <span class="pl num">{{ f.asset_count }} 张 · {{ statusText(f.status) }}</span>
-            </span>
-            <button
-              class="btn-glass btn-outline-glass"
-              style="padding: 5px 12px; font-size: 12px"
-              @click="recheckFolder(f.folder_id, f.label || f.path)"
-            >
-              重新检查
-            </button>
-            <button
-              v-if="f.status !== 'online'"
-              class="btn-glass btn-outline-glass"
-              style="padding: 5px 12px; font-size: 12px"
-              @click="relocateFolder(f.folder_id, f.label || f.path)"
-            >
-              重新指定位置…
-            </button>
-          </div>
-        </div>
-        <p v-else class="set-d" style="margin-top: 10px">还没有导入过文件夹。</p>
-        <p v-if="folderNotice" role="status" class="set-d" style="color: var(--mm-success); margin-top: 8px">
-          {{ folderNotice }}
-        </p>
-        <p v-if="folderError" role="alert" class="set-d" style="color: var(--mm-danger); margin-top: 8px">
-          {{ folderError }}
-        </p>
-      </div>
-
-      <!-- 存储占用（裁定 25：只分析不清理） -->
-      <div class="card">
-        <div class="set-row" style="padding-top: 0">
-          <div class="set-info">
-            <div class="set-t">存储占用</div>
-            <div class="set-d">索引与缩略图只为本机服务。</div>
-          </div>
-        </div>
-        <div v-if="usage" class="path-rows">
-          <div class="prow">
-            <span class="pinfo">
-              <span class="pl">照片记录</span>
-              <span class="pv num">
-                {{ usage.assets_count }} 条（已建索引 {{ usage.embedded_count }}）
-              </span>
-            </span>
-          </div>
-          <div class="prow">
-            <span class="pinfo">
-              <span class="pl">索引数据库</span>
-              <span class="pv num">{{ formatBytes((usage.db_bytes ?? 0) + (usage.wal_bytes ?? 0)) }}</span>
-            </span>
-          </div>
-          <div class="prow">
-            <span class="pinfo">
-              <span class="pl">缩略图</span>
-              <span class="pv num">{{ formatBytes(usage.thumbs_bytes ?? 0) }}</span>
-            </span>
-          </div>
-          <div class="prow">
-            <span class="pinfo">
-              <span class="pl">语义模型</span>
-              <span class="pv num">{{ formatBytes(usage.models_bytes ?? 0) }}</span>
-            </span>
-          </div>
-          <div v-for="ix in usage.per_index" :key="ix.index_id" class="prow">
-            <span class="pinfo">
-              <span class="pl">
-                索引：{{ ix.display }}{{ ix.status !== "active" ? "（已停用）" : "" }}
-              </span>
-              <span class="pv num">
-                {{ ix.count }} 条 · {{ formatBytes(ix.approx_bytes ?? 0) }}
-              </span>
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 无法导入的文件 -->
-      <div class="card">
-        <div class="set-row" style="padding-top: 0">
-          <div class="set-info">
-            <div class="set-t">无法导入的文件</div>
-            <div class="set-d">这些文件的原文件没有被动过。</div>
-          </div>
-        </div>
-        <div
-          v-if="failed && failed.length"
-          class="path-rows"
-          style="max-height: 200px; overflow-y: auto"
-        >
-          <div v-for="it in failed" :key="it.asset_id" class="prow">
-            <span class="pinfo">
-              <span class="pv" style="font-size: 12px">{{ it.path }}</span>
-              <span v-if="it.error_code" class="pl" style="color: var(--mm-danger)">
-                {{ it.error_code }}
-              </span>
-            </span>
-          </div>
-        </div>
-        <p v-else-if="failed" class="set-d" style="margin-top: 10px">没有失败记录。</p>
       </div>
     </div>
   </div>
