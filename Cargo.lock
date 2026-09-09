@@ -2758,6 +2758,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "image",
+ "libloading 0.7.4",
  "mm-core",
  "ort",
  "reqwest 0.12.28",

@@ -109,17 +109,16 @@ fn embed_queue_for(indexer: &dyn Indexer, db_path: &Path, app: &tauri::AppHandle
                             continue;
                         }
                     }
-                    if group.len() >= GROUP_SIZE {
-                        if tx
+                    if group.len() >= GROUP_SIZE
+                        && tx
                             .send(DecodedGroup {
                                 items: std::mem::take(&mut group),
                                 copied: std::mem::take(&mut copied),
                                 skipped: std::mem::take(&mut skipped),
                             })
                             .is_err()
-                        {
-                            return; // 推理端已退出
-                        }
+                    {
+                        return; // 推理端已退出
                     }
                 }
                 if !group.is_empty() || copied > 0 || skipped > 0 {

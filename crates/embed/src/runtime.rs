@@ -51,9 +51,7 @@ impl RuntimeVariant {
     /// 变体是否已在本地就绪（全部期望 dll 存在）
     pub fn is_ready(&self, runtime_dir: &Path) -> bool {
         let dest = runtime_dir.join(&self.kind);
-        self.expected_dlls
-            .iter()
-            .all(|d| dest.join(d).is_file())
+        self.expected_dlls.iter().all(|d| dest.join(d).is_file())
     }
 }
 
@@ -75,10 +73,7 @@ pub fn ensure_runtime(
     // zip 已完整（sha 匹配）则跳过下载
     let zip_path = runtime_dir.join(&zip_entry.name);
     if !file_matches(&zip_path, &zip_entry.sha256) {
-        let downloader = ModelDownloader::new(
-            endpoints.to_vec(),
-            runtime_dir.to_path_buf(),
-        );
+        let downloader = ModelDownloader::new(endpoints.to_vec(), runtime_dir.to_path_buf());
         downloader.ensure_all(&to_manifest(zip_entry), on_progress)?;
     }
     extract_dlls(&zip_path, &dest, &variant.expected_dlls)
@@ -129,9 +124,7 @@ pub fn import_models(
     for f in &manifest.files {
         let src = dir.join(&f.name);
         if !src.is_file() {
-            report
-                .mismatched
-                .push((f.name.clone(), "缺失".into()));
+            report.mismatched.push((f.name.clone(), "缺失".into()));
             continue;
         }
         if !file_matches(&src, &f.sha256) {
@@ -178,15 +171,12 @@ fn extract_dlls(zip_path: &Path, dest: &Path, expected: &[String]) -> Result<(),
     let mut archive = zip::ZipArchive::new(file).map_err(|_| ErrorCode::ReadFailed)?;
     for name in expected {
         let idx = (0..archive.len()).find(|&i| {
-            archive
-                .by_index(i)
-                .ok()
-                .is_some_and(|e| {
-                    e.is_file()
-                        && Path::new(e.name())
-                            .file_name()
-                            .is_some_and(|f| f.to_string_lossy() == *name)
-                })
+            archive.by_index(i).ok().is_some_and(|e| {
+                e.is_file()
+                    && Path::new(e.name())
+                        .file_name()
+                        .is_some_and(|f| f.to_string_lossy() == *name)
+            })
         });
         let Some(idx) = idx else {
             return Err(ErrorCode::ReadFailed);
@@ -214,10 +204,11 @@ fn zip_is_plausible(zip_path: &Path, expected: &[String]) -> bool {
         return false;
     };
     (0..archive.len()).any(|i| {
-        archive
-            .by_index(i)
-            .ok()
-            .is_some_and(|e| Path::new(e.name()).file_name().is_some_and(|f| f.to_string_lossy() == "onnxruntime.dll"))
+        archive.by_index(i).ok().is_some_and(|e| {
+            Path::new(e.name())
+                .file_name()
+                .is_some_and(|f| f.to_string_lossy() == "onnxruntime.dll")
+        })
     })
 }
 
@@ -230,10 +221,7 @@ fn extract_zip_to(zip_path: &Path, dest: &Path) -> Result<(), String> {
         if !entry.is_file() {
             continue;
         }
-        let name = entry
-            .enclosed_name()
-            .ok_or("zip 内路径非法")?
-            .to_path_buf();
+        let name = entry.enclosed_name().ok_or("zip 内路径非法")?.to_path_buf();
         let out = dest.join(name);
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -246,10 +234,7 @@ fn extract_zip_to(zip_path: &Path, dest: &Path) -> Result<(), String> {
 }
 
 fn tempfile_dir() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "miaomory-import-{}",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("miaomory-import-{}", std::process::id()))
 }
 
 fn file_matches(path: &Path, expected_sha256: &str) -> bool {

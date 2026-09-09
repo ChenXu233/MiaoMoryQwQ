@@ -47,3 +47,14 @@
 | TensorRT EP | 否 | 运行时 GB 级 + 按机建引擎，对分钟级后台索引收益不成比例 |
 | fp16 模型 + 维持 DML | 缓（开放问题） | DML 对 fp16 支持完善，可消 int8 QDQ 回退；待模型侧产出 fp16 onnx 并实测（spec 0008 §8） |
 | 只做 CUDA、不设默认 CPU | 否 | 违背「最小配置」裁定；无 N 卡用户被运行时门槛拦截 |
+
+## 实测记录（2026-09-09/10，RTX 4070 Laptop / 233 张 JPEG@F: USB 盘 / release 构建 / 流水化嵌入 worker）
+
+| 配置 | 嵌入墙钟 | 说明 |
+| :--- | :--- | :--- |
+| DirectML + int8（历史基线） | 54s~59.5s | DML 对 int8 QDQ 支持不全（部分算子回退 CPU）；批 4→78.5s / **8→53.9s（甜点）** / 16→78.0s |
+| CPU EP（官方 cpu 变体 1.28.0） | 72.8s~77.6s | load-dynamic 链路全通；推理累计 66~73s |
+| CUDA 变体 1.28.0 | 预检降级（未达推理） | **官方 gpu zip 不捆绑 cuDNN/cuBLAS**（ORT 1.19+ 政策），本机驱动 560 系无 CUDA 13 运行时 → `probe_provider_dll` 预检失败 → 降级 CPU，无段错误；CUDA 全速数据待装齐环境后回填 |
+| DML 变体动态库 | 产物缺失 | 微软 DirectML nuget 冻结 1.24（API < 1.28 不可用）、pyke CDN 为加密私有格式 → 需源码自建（`--use_dml --build_dll`），产物入库前 DML 选择静默回退 CPU（1.28 对缺失 EP 不报错） |
+
+工程要点：onnxruntime 1.28 对**注册失败的 session options 清理存在段错误**（上游 bug）——CUDA EP 必须先经 `probe_provider_dll` 预检（`LOAD_WITH_ALTERED_SEARCH_PATH` 使 cuDNN 从变体目录解析）再注册，禁止盲注册后降级。

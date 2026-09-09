@@ -100,8 +100,7 @@ pub fn set_inference_ep(state: State<'_, AppState>, ep: String) -> Result<(), St
     let mut cfg: mm_platform::AppConfig =
         mm_platform::load_config_at(&config_path).unwrap_or_default();
     cfg.inference_ep = Some(ep.clone());
-    mm_platform::save_config_at(&config_path, &cfg)
-        .map_err(|e| format!("配置写入失败：{e}"))?;
+    mm_platform::save_config_at(&config_path, &cfg).map_err(|e| format!("配置写入失败：{e}"))?;
     tracing::info!(ep = %ep, "推理后端已更改，重启后生效");
     Ok(())
 }
@@ -109,7 +108,11 @@ pub fn set_inference_ep(state: State<'_, AppState>, ep: String) -> Result<(), St
 /// 下载所选变体的运行时包（后台线程；断点续传 + 校验 + 解压，spec 0008 §3.3）
 #[tauri::command]
 #[specta::specta]
-pub fn download_runtime(app: AppHandle, state: State<'_, AppState>, kind: String) -> Result<(), String> {
+pub fn download_runtime(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    kind: String,
+) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     if kind != "cuda" && kind != "cpu" {
         return Err(format!("运行时 {kind} 不支持按需下载"));
@@ -124,7 +127,12 @@ pub fn download_runtime(app: AppHandle, state: State<'_, AppState>, kind: String
         "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0".to_string(),
         state.model_endpoints[0].clone(),
     ];
-    let runtime_dir = state.workspace.runtime_dir("cuda").parent().unwrap().to_path_buf();
+    let runtime_dir = state
+        .workspace
+        .runtime_dir("cuda")
+        .parent()
+        .unwrap()
+        .to_path_buf();
     let app2 = app.clone();
 
     std::thread::spawn(move || {
@@ -140,7 +148,8 @@ pub fn download_runtime(app: AppHandle, state: State<'_, AppState>, kind: String
             }
             .emit(&app2);
         };
-        let result = mm_embed::runtime::ensure_runtime(&endpoints, &variant, &runtime_dir, &progress);
+        let result =
+            mm_embed::runtime::ensure_runtime(&endpoints, &variant, &runtime_dir, &progress);
         match result {
             Ok(()) => {
                 tracing::info!(kind = %kind, "运行时就绪");
@@ -162,14 +171,18 @@ pub fn import_runtime(state: State<'_, AppState>, path: String) -> Result<bool, 
     let manifest = mm_embed::runtime::runtime_manifest();
     // 按 zip 名猜测变体（含 "cuda" 走 cuda，否则 cpu）
     let lower = path.to_ascii_lowercase();
-    let kind = if lower.contains("cuda") { "cuda" } else { "cpu" };
+    let kind = if lower.contains("cuda") {
+        "cuda"
+    } else {
+        "cpu"
+    };
     let Some(variant) = manifest.variant(kind).cloned() else {
         return Err(format!("运行时 {kind} 没有分发清单"));
     };
     let verified = mm_embed::runtime::import_runtime_zip(
         std::path::Path::new(&path),
         &variant,
-        &state.workspace.runtime_dir("cuda").parent().unwrap(),
+        state.workspace.runtime_dir("cuda").parent().unwrap(),
     )
     .map_err(|e| e.to_string())?;
     tracing::info!(kind, verified, "运行时本地导入完成");
@@ -198,12 +211,9 @@ pub fn import_models(
     path: String,
 ) -> Result<ImportReport, String> {
     let manifest = mm_embed::manifest::manifest();
-    let report = mm_embed::runtime::import_models(
-        std::path::Path::new(&path),
-        &manifest,
-        &state.model_dir,
-    )
-    .map_err(|e| e.to_string())?;
+    let report =
+        mm_embed::runtime::import_models(std::path::Path::new(&path), &manifest, &state.model_dir)
+            .map_err(|e| e.to_string())?;
     let out = ImportReport {
         imported: i32::try_from(report.imported).unwrap_or(i32::MAX),
         skipped: i32::try_from(report.skipped).unwrap_or(i32::MAX),
@@ -234,14 +244,20 @@ fn detect_discrete_gpu() -> bool {
         {
             use std::os::windows::process::CommandExt;
             let output = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command",
-                    "(Get-CimInstance Win32_VideoController).Name -join '`n'"])
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-CimInstance Win32_VideoController).Name -join '`n'",
+                ])
                 .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
                 .output();
             let Ok(out) = output else { return false };
             let names = String::from_utf8_lossy(&out.stdout).to_lowercase();
-            names.contains("geforce") || names.contains("rtx") || names.contains("gtx")
-                || names.contains("radeon rx") || names.contains("arc")
+            names.contains("geforce")
+                || names.contains("rtx")
+                || names.contains("gtx")
+                || names.contains("radeon rx")
+                || names.contains("arc")
         }
         #[cfg(not(windows))]
         {

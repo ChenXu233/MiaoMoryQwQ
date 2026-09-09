@@ -53,6 +53,14 @@ fn main() {
                 .join("onnxruntime.dll")
         });
     mm_embed::init_runtime_dylib(&dylib).expect("加载 onnxruntime 变体失败");
+    let mut ep = ep;
+    if ep == mm_embed::EpKind::Cuda {
+        let dir = dylib.parent().unwrap().to_path_buf();
+        if !mm_embed::probe_provider_dll(&dir, "onnxruntime_providers_cuda.dll") {
+            println!("降级: CUDA 运行时组件加载失败（需驱动 + CUDA 13 运行时），以 CPU 继续");
+            ep = mm_embed::EpKind::Cpu;
+        }
+    }
     let source = Path::new(&args[1]).to_path_buf();
     let ws = Path::new(&args[2]).to_path_buf();
     let model_dir = Path::new(&args[3]).to_path_buf();
@@ -77,7 +85,7 @@ fn main() {
         .expect("注册索引");
     drop(store);
 
-    if scan_folder(&source).unwrap().len() > 0 {
+    if !scan_folder(&source).unwrap().is_empty() {
         let engine = Arc::new(ImportEngine::new(
             db_path.clone(),
             ws.join("thumbs"),
@@ -142,13 +150,12 @@ fn main() {
                         }
                         Err(_) => continue,
                     }
-                    if group.len() >= 8 {
-                        if tx
+                    if group.len() >= 8
+                        && tx
                             .send((std::mem::take(&mut group), std::mem::take(&mut bytes_read)))
                             .is_err()
-                        {
-                            return;
-                        }
+                    {
+                        return;
                     }
                 }
                 if !group.is_empty() {

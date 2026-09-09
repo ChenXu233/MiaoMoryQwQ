@@ -14,6 +14,8 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 sha2 = "0.11"
 hex = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# EP 实现库预检（spec 0008 §3.1：providers_cuda.dll 加载失败即降级，避免 ort 段错误）
+libloading = "0.7"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

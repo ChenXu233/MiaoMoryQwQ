@@ -72,6 +72,29 @@ impl EpKind {
     }
 }
 
+/// 探测变体目录中的 EP 实现库能否加载（依赖是否齐全）。
+/// CUDA 依赖（cudnn/cublas）与主库同放：LOAD_WITH_ALTERED_SEARCH_PATH 让依赖
+/// 解析覆盖 dll 同目录。**必须在注册该 EP 前调用**——onnxruntime 1.28 对
+/// 注册失败的 session options 清理存在段错误（上游问题），预检不过直接降级。
+#[cfg(windows)]
+pub fn probe_provider_dll(dir: &Path, dll: &str) -> bool {
+    const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
+    let path = dir.join(dll);
+    if !path.is_file() {
+        return false;
+    }
+    unsafe {
+        libloading::os::windows::Library::load_with_flags(&path, LOAD_WITH_ALTERED_SEARCH_PATH)
+            .is_ok()
+    }
+}
+
+/// 非 Windows：无此预检需求（EP 集合编译期确定）
+#[cfg(not(windows))]
+pub fn probe_provider_dll(_dir: &Path, _dll: &str) -> bool {
+    false
+}
+
 /// 加载 onnxruntime 动态库变体并提交 ort 全局环境（**进程级仅一次**）。
 /// 必须在任何 session 构建之前调用（app `run()` 最早处）；失败由调用方回退
 /// 自带变体重试。非 Windows 为编译期链接，直接成功。
@@ -173,21 +196,21 @@ impl ClipEmbedder {
 
         Ok((
             Self {
-            index_id,
-            slug: "chinese-clip-vit-b16-int8",
-            display: "Chinese-CLIP ViT-B/16（int8）",
-            visual: Mutex::new(visual),
-            text: Mutex::new(text),
-            visual_input_name,
-            visual_output_name,
-            text_input_names,
-            text_output_name,
-            text_input_is_i32,
-            tokenizer,
-            visual_fixed_square: manifest.visual_fixed_square,
-            embedding_dim: manifest.embedding_dim,
-        },
-        degraded,
+                index_id,
+                slug: "chinese-clip-vit-b16-int8",
+                display: "Chinese-CLIP ViT-B/16（int8）",
+                visual: Mutex::new(visual),
+                text: Mutex::new(text),
+                visual_input_name,
+                visual_output_name,
+                text_input_names,
+                text_output_name,
+                text_input_is_i32,
+                tokenizer,
+                visual_fixed_square: manifest.visual_fixed_square,
+                embedding_dim: manifest.embedding_dim,
+            },
+            degraded,
         ))
     }
 

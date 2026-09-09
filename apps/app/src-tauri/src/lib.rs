@@ -126,7 +126,7 @@ pub fn run() {
             // 回退自带 DML 变体并记入降级（config 不改写，修复环境重启即生效）
             let (ep, runtime_degraded) = {
                 let cfg_value = paths.inference_ep.as_deref().unwrap_or("cpu");
-                let parsed = mm_embed::EpKind::parse(cfg_value).unwrap_or_else(|| {
+                let mut parsed = mm_embed::EpKind::parse(cfg_value).unwrap_or_else(|| {
                     tracing::warn!(value = cfg_value, "inference_ep 配置值无效，按 CPU 处理");
                     mm_embed::EpKind::Cpu
                 });
@@ -164,9 +164,25 @@ pub fn run() {
                         });
                         panic!("推理运行时初始化失败：{reason}");
                     }
-                    if parsed == mm_embed::EpKind::Cuda && !candidates[0].is_file() {
-                        degraded =
-                            Some("CUDA 运行时未下载/导入，本次以自带 DirectML 变体启动".into());
+                    if parsed == mm_embed::EpKind::Cuda {
+                        if !candidates[0].is_file() {
+                            degraded = Some(
+                                "CUDA 运行时未下载/导入，本次以自带 DirectML 变体启动".into(),
+                            );
+                        } else {
+                            // providers_cuda.dll 依赖预检（CUDA 13 运行时/驱动缺失时
+                            // onnxruntime 注册 CUDA EP 会段错误——上游问题，必须前置拦截）
+                            let dir = candidates[0].parent().unwrap().to_path_buf();
+                            if !mm_embed::probe_provider_dll(&dir, "onnxruntime_providers_cuda.dll") {
+                                degraded = Some(
+                                    "CUDA 运行时组件加载失败（需要 NVIDIA 驱动与 CUDA 13 运行时），本次以 CPU 继续".into(),
+                                );
+                            }
+                        }
+                    }
+                    if degraded.is_some() && parsed == mm_embed::EpKind::Cuda {
+                        // 会话层改用纯 CPU 链（当前变体上 DirectML 静默跳过 → 实际 CPU）
+                        parsed = mm_embed::EpKind::Cpu;
                     }
                 }
                 #[cfg(not(windows))]
