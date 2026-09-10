@@ -69,16 +69,16 @@ impl EmbedWorker {
     }
 }
 
-/// 解码者 → 推理者的消息：一张已解码图 + 组间隔完成的向量复制计数
-struct DecodedItem {
+/// 解码者 → 推理者：一组已解码图（meta 与 images 下标对齐）+ 组间隔完成的向量复制计数
+struct DecodedMeta {
     asset_id: i64,
     folder_id: i64,
     file_name: String,
-    image: DecodedImage,
 }
 
 struct DecodedGroup {
-    items: Vec<DecodedItem>,
+    metas: Vec<DecodedMeta>,
+    images: Vec<DecodedImage>,
     copied: u32,
     /// 本组解码失败的 (asset_id, 文件名, 错误摘要)——推理端统一记冷却/发事件
     failed: Vec<(i64, String, String)>,
@@ -150,7 +150,8 @@ fn embed_queue_for(
         let decoder = std::thread::Builder::new()
             .name("mm-embed-decode".into())
             .spawn(move || {
-                let mut group: Vec<DecodedItem> = Vec::new();
+                let mut metas: Vec<DecodedMeta> = Vec::new();
+                let mut images: Vec<DecodedImage> = Vec::new();
                 let mut copied = 0u32;
                 let mut failed: Vec<(i64, String, String)> = Vec::new();
                 for (asset_id, _year, sha256) in &pending {
@@ -179,12 +180,14 @@ fn embed_queue_for(
                         .unwrap_or_else(|| row.storage_key.clone());
                     let folder_id = row.folder_id;
                     match mm_pipeline::decode::decode_photo(&path) {
-                        Ok(photo) => group.push(DecodedItem {
-                            asset_id: *asset_id,
-                            folder_id,
-                            file_name,
-                            image: photo.image,
-                        }),
+                        Ok(photo) => {
+                            metas.push(DecodedMeta {
+                                asset_id: *asset_id,
+                                folder_id,
+                                file_name,
+                            });
+                            images.push(photo.image);
+                        }
                         // 原图不可读：记入失败明细（推理端统一记冷却/发事件），不阻塞其余资产
                         Err(e) => {
                             tracing::warn!(asset_id, path = %row.storage_key, error = ?e, "解码失败");
@@ -192,10 +195,11 @@ fn embed_queue_for(
                             continue;
                         }
                     }
-                    if group.len() >= GROUP_SIZE
+                    if images.len() >= GROUP_SIZE
                         && tx
                             .send(DecodedGroup {
-                                items: std::mem::take(&mut group),
+                                metas: std::mem::take(&mut metas),
+                                images: std::mem::take(&mut images),
                                 copied: std::mem::take(&mut copied),
                                 failed: std::mem::take(&mut failed),
                             })
@@ -204,9 +208,10 @@ fn embed_queue_for(
                         return; // 推理端已退出
                     }
                 }
-                if !group.is_empty() || copied > 0 || !failed.is_empty() {
+                if !metas.is_empty() || copied > 0 || !failed.is_empty() {
                     let _ = tx.send(DecodedGroup {
-                        items: group,
+                        metas,
+                        images,
                         copied,
                         failed,
                     });
@@ -258,26 +263,25 @@ fn embed_queue_for(
                 }
                 .emit(app);
             }
-            if !group.items.is_empty() {
-                let images: Vec<DecodedImage> =
-                    group.items.iter().map(|it| it.image.clone()).collect();
-                match indexer.embed_images(&images) {
+            if !group.images.is_empty() {
+                // 直接借用整组图像（曾经克隆一份：8 张全尺寸 RGB 可达数百 MB 的纯拷贝）
+                match indexer.embed_images(&group.images) {
                     Ok(vectors) => {
-                        for (item, vec) in group.items.iter().zip(vectors) {
-                            match store.insert_embedding(index_id, item.asset_id, &vec) {
+                        for (meta, vec) in group.metas.iter().zip(vectors) {
+                            match store.insert_embedding(index_id, meta.asset_id, &vec) {
                                 Ok(()) => {
                                     written += 1;
                                     let _ = EmbedProgressEvent {
                                         done: store.count_embedded(index_id).unwrap_or(0) as i32,
                                         total: queue_total as i32,
                                         failed: *failed_total.lock().unwrap() as i32,
-                                        folder_id: i32::try_from(item.folder_id).unwrap_or(-1),
-                                        file_name: item.file_name.clone(),
+                                        folder_id: i32::try_from(meta.folder_id).unwrap_or(-1),
+                                        file_name: meta.file_name.clone(),
                                     }
                                     .emit(app);
                                 }
                                 Err(e) => {
-                                    tracing::warn!(asset_id = item.asset_id, error = ?e, "向量写入失败");
+                                    tracing::warn!(asset_id = meta.asset_id, error = ?e, "向量写入失败");
                                 }
                             }
                         }
@@ -294,7 +298,10 @@ fn embed_queue_for(
         // 无 sleep 烧核 + 事件洪泛；交还外层 1.5s 节奏自愈重试（原文件恢复后续上）。
         // 恒败项由冷却机制在 MAX_DECODE_ATTEMPTS 轮内自然出队。
         if written == 0 {
-            tracing::warn!(index_id, "本轮嵌入零写入，断路等待下一拍（队首可能有恒败项）");
+            tracing::warn!(
+                index_id,
+                "本轮嵌入零写入，断路等待下一拍（队首可能有恒败项）"
+            );
             break;
         }
     }

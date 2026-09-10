@@ -160,12 +160,16 @@ pub fn load_config_at(path: &Path) -> Result<AppConfig, PlatformError> {
     Ok(toml::from_str(&raw)?)
 }
 
-/// 保存配置到指定路径（父目录按需创建）
+/// 保存配置到指定路径（父目录按需创建）。先写临时文件再原子替换：
+/// 直接覆盖写在崩溃半写时会把配置置于「解析失败 → 回退默认」状态，
+/// 之后任何一次设置写入都会把默认值整体覆盖回去（data_dir 等静默丢失）
 pub fn save_config_at(path: &Path, config: &AppConfig) -> Result<(), PlatformError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, toml::to_string_pretty(config)?)?;
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, toml::to_string_pretty(config)?)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 

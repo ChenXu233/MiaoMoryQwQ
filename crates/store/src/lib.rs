@@ -650,7 +650,9 @@ impl Store {
              JOIN {table} v ON v.asset_id = a.asset_id
              WHERE a.folder_id = ?1 AND a.status = 'ready'"
         );
-        Ok(self.conn.query_row(&sql, params![folder_id], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row(&sql, params![folder_id], |r| r.get(0))?)
     }
 
     /// 工作区 ready 资产总数（进度卡分母）

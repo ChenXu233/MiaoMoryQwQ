@@ -8,8 +8,15 @@ import { useModelStatus } from "../../composables/useModelStatus";
 import { useInference } from "../../composables/useInference";
 
 const model = useModelStatus();
-const { info: infInfo, downloading: rtDownloading, refresh: infRefresh, setEp, downloadRuntime, importRuntime } =
-  useInference();
+const {
+  info: infInfo,
+  downloading: rtDownloading,
+  rtError,
+  refresh: infRefresh,
+  setEp,
+  downloadRuntime,
+  importRuntime,
+} = useInference();
 
 const error = ref<string | null>(null);
 const epNotice = ref<string | null>(null);
@@ -215,7 +222,10 @@ function epLabel(o: InferenceInfo["options"][number]): string {
         正在下载运行时包：{{ Math.round(rtDownloading.received / 1e6) }} /
         {{ Math.round(rtDownloading.total / 1e6) }} MB（已下载部分不会丢失）
       </div>
-      <div v-else class="ops" style="margin-top: 10px">
+      <p v-else-if="rtError" role="alert" class="set-d" style="color: var(--mm-danger); margin: 10px 0 0">
+        运行时包下载失败：{{ rtError }}。可重试或改用本地导入。
+      </p>
+      <div v-if="!rtDownloading" class="ops" style="margin-top: 10px">
         <span class="hint">CUDA 运行时包（约 350MB，下载一次）</span>
         <button class="btn-glass btn-primary" @click="downloadRuntime()">下载运行时包</button>
         <button class="btn-glass btn-outline-glass" @click="importRuntimeZip">从本地导入…</button>

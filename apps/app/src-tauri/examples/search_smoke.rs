@@ -8,7 +8,10 @@ use mm_store::Store;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let model_dir = std::path::PathBuf::from(args.next().expect("用法: search_smoke <模型目录> <db> <dll> [query]"));
+    let model_dir = std::path::PathBuf::from(
+        args.next()
+            .expect("用法: search_smoke <模型目录> <db> <dll> [query]"),
+    );
     let db = args.next().expect("缺少 db 路径");
     let dll = args.next().expect("缺少 dll 路径");
     let query = args.next().unwrap_or_else(|| "花".into());

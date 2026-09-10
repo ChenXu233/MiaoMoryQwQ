@@ -90,7 +90,16 @@ pub fn set_data_location(state: State<'_, AppState>, dir: String) -> Result<(), 
         return Err("这个文件夹无法写入，请选择你有写入权限的位置".to_string());
     }
     let config_path = state.workspace.config_path.clone();
-    let mut cfg: AppConfig = load_config_at(&config_path).unwrap_or_default();
+    // 配置已存在但读取/解析失败时不得以默认值覆盖写回（会连带抹掉 hf_endpoint/
+    // inference_ep 等）——明确报错让用户先处理配置文件
+    let mut cfg: AppConfig = if config_path.exists() {
+        load_config_at(&config_path).map_err(|e| {
+            tracing::warn!(code = "CONFIG_READ_FAILED", error = %e, "配置读取失败");
+            format!("配置文件读取失败，为避免覆盖其余设置已取消：{e}")
+        })?
+    } else {
+        Default::default()
+    };
     cfg.data_dir = Some(target);
     save_config_at(&config_path, &cfg).map_err(|e| {
         tracing::warn!(code = "CONFIG_WRITE_FAILED", error = %e, "写入配置失败");

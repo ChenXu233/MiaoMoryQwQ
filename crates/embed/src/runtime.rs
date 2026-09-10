@@ -109,12 +109,14 @@ pub fn import_models(
     manifest: &ModelManifest,
     model_dir: &Path,
 ) -> Result<ImportReport, ErrorCode> {
-    let tmp = tempfile_dir();
+    // 唯一临时目录（TempDir drop 自动清理）：曾用固定名 miaomory-import-{pid}，
+    // 同进程并发导入会互踩，先完成者的清理会删掉后者正在读的文件
+    let tmp = tempfile::tempdir().map_err(|_| ErrorCode::WriteFailed)?;
     let dir: PathBuf = if source.is_dir() {
         source.to_path_buf()
     } else {
-        extract_zip_to(source, &tmp).map_err(|_| ErrorCode::WriteFailed)?;
-        tmp.clone()
+        extract_zip_to(source, tmp.path()).map_err(|_| ErrorCode::WriteFailed)?;
+        tmp.path().to_path_buf()
     };
 
     let mut report = ImportReport {
@@ -142,9 +144,7 @@ pub fn import_models(
         std::fs::copy(&src, &dest).map_err(|_| ErrorCode::WriteFailed)?;
         report.imported += 1;
     }
-    if dir != source {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    // tmp 随 TempDir drop 自动清理（含导入中途出错返回的情形）
     Ok(report)
 }
 
@@ -234,10 +234,6 @@ fn extract_zip_to(zip_path: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn tempfile_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("miaomory-import-{}", std::process::id()))
-}
-
 fn file_matches(path: &Path, expected_sha256: &str) -> bool {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -256,4 +252,29 @@ fn file_matches(path: &Path, expected_sha256: &str) -> bool {
         return true;
     }
     hex::encode(hasher.finalize()) == expected_sha256
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 内置清单回归护栏：可解析（BOM/语法）且完整性字段齐全（sha/size 非空）。
+    /// 曾因 PS5.1 写入 BOM + 空 sha 两度让分发链路静默失效，单测兜住不再复发
+    #[test]
+    fn runtime_manifest_parses_with_integrity_fields() {
+        let m = runtime_manifest().expect("内置运行时清单损坏");
+        assert_eq!(m.version, 1);
+        assert!(!m.onnxruntime.is_empty());
+        assert!(!m.variants.is_empty());
+        for v in &m.variants {
+            let entry = v.zip_entry();
+            assert!(!entry.sha256.is_empty(), "变体 {} sha256 为空", v.kind);
+            assert!(entry.size > 0, "变体 {} size 为 0", v.kind);
+            assert!(
+                !v.expected_dlls.is_empty(),
+                "变体 {} 缺 expected_dlls",
+                v.kind
+            );
+        }
+    }
 }

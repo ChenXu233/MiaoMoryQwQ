@@ -21,7 +21,8 @@ use tauri_specta::{collect_commands, collect_events, Builder};
 use crate::events::{
     EmbedProgressEvent, FolderStatusChangedEvent, ImportFinishedEvent, ImportItemFailedEvent,
     ImportPausedEvent, ImportProgressEvent, ImportResumedEvent, ModelDownloadProgressEvent,
-    ModelReadyEvent, ModelsImportedEvent, RuntimeDownloadProgressEvent, RuntimeReadyEvent,
+    ModelReadyEvent, ModelsImportedEvent, RuntimeDownloadFailedEvent, RuntimeDownloadProgressEvent,
+    RuntimeReadyEvent,
 };
 use crate::state::AppState;
 
@@ -80,6 +81,7 @@ pub fn app_builder() -> Builder<Wry> {
             FolderStatusChangedEvent,
             RuntimeDownloadProgressEvent,
             RuntimeReadyEvent,
+            RuntimeDownloadFailedEvent,
             ModelsImportedEvent,
         ])
 }
@@ -141,12 +143,20 @@ pub fn run() {
                     if parsed == mm_embed::EpKind::Cuda {
                         candidates.push(paths.runtime_dir("cuda").join("onnxruntime.dll"));
                     }
+                    if parsed == mm_embed::EpKind::Cpu {
+                        // 所选 CPU 且用户下载过 CPU 变体则优先（任何变体都含 CPU EP）
+                        candidates.push(paths.runtime_dir("cpu").join("onnxruntime.dll"));
+                    }
                     candidates.push(paths.runtime_dir("dml").join("onnxruntime.dll"));
+                    candidates.push(paths.runtime_dir("cpu").join("onnxruntime.dll"));
                     if let Some(exe) =
                         std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
                     {
                         candidates.push(exe.join("runtime").join("dml").join("onnxruntime.dll"));
                     }
+                    // 按所选 EP 会重复推入同一目录：去重保持优先级顺序
+                    let mut seen = std::collections::HashSet::new();
+                    candidates.retain(|c| seen.insert(c.clone()));
                     let mut loaded = false;
                     let mut last_err: Option<String> = None;
                     for cand in &candidates {

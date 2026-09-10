@@ -127,7 +127,10 @@ fn watch_loop(db_path: PathBuf, engine: Arc<ImportEngine>) {
                     tracing::info!(folder = %path.display(), job_id, "watcher 触发增量同步")
                 }
                 Err(e) => {
-                    tracing::debug!(folder = %path.display(), error = ?e, "watcher 同步启动失败（下轮重试）")
+                    // 失败后重打标记（以本次为新去抖起点，约 2s 后重试）：
+                    // 标记已删而不再补插的话，要等下一次文件系统事件才有机会同步
+                    dirty.insert(fid, Instant::now());
+                    tracing::debug!(folder = %path.display(), error = ?e, "watcher 同步启动失败（去抖后重试）")
                 }
             }
         }

@@ -78,6 +78,13 @@ pub struct RuntimeDownloadProgressEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 pub struct RuntimeReadyEvent {}
 
+/// 运行时包下载/安装失败（终态）：前端据此清除「下载中」并展示原因，
+/// 否则进度事件之后再无任何信号，下载卡永久停留
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct RuntimeDownloadFailedEvent {
+    pub error: String,
+}
+
 /// 模型本地导入完成且装配成功
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 pub struct ModelsImportedEvent {}

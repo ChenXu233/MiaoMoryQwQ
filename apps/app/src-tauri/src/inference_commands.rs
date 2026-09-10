@@ -6,12 +6,37 @@ use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event;
 
-use crate::events::{ModelsImportedEvent, RuntimeDownloadProgressEvent, RuntimeReadyEvent};
+use crate::events::{
+    ModelsImportedEvent, RuntimeDownloadFailedEvent, RuntimeDownloadProgressEvent,
+    RuntimeReadyEvent,
+};
 use crate::state::AppState;
 
 /// 运行时下载任务防重入（与模型下载同模式，spec 0004 验收 7）
 static RUNTIME_DOWNLOAD_IN_FLIGHT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+/// 模型本地导入防重入：复制/解压/装配非并发安全（曾用固定名临时目录互踩）
+static IMPORT_MODELS_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 防重入守卫：Drop 复位标志——线程内 panic 展开时也能复位，杜绝标志永久卡死
+struct InFlightGuard(&'static std::sync::atomic::AtomicBool);
+
+impl InFlightGuard {
+    fn acquire(flag: &'static std::sync::atomic::AtomicBool) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Self(flag))
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct EpOption {
@@ -55,7 +80,12 @@ pub fn inference_info(state: State<'_, AppState>) -> InferenceInfo {
     };
     let selected = parse_ep(&state);
     let degraded = state.ep_degraded.lock().unwrap().clone();
-    let runtime_missing = state.runtime_missing.lock().unwrap().clone().or(manifest_err);
+    let runtime_missing = state
+        .runtime_missing
+        .lock()
+        .unwrap()
+        .clone()
+        .or(manifest_err);
     let gpu_detected = detect_discrete_gpu();
     let cuda_variant = manifest.as_ref().and_then(|m| m.variant("cuda")).cloned();
     let runtime_ready = cuda_variant
@@ -106,8 +136,14 @@ pub fn set_inference_ep(state: State<'_, AppState>, ep: String) -> Result<(), St
         return Err(format!("未知的推理后端：{ep}"));
     }
     let config_path = state.workspace.config_path.clone();
-    let mut cfg: mm_platform::AppConfig =
-        mm_platform::load_config_at(&config_path).unwrap_or_default();
+    // 配置已存在但读取/解析失败时，严禁以默认值覆盖写回——那会连带抹掉
+    // data_dir/hf_endpoint 等（data_dir 丢失 = 数据根回到默认位置，用户视角库消失）
+    let mut cfg = if config_path.exists() {
+        mm_platform::load_config_at(&config_path)
+            .map_err(|e| format!("配置文件读取失败，为避免覆盖其余设置已取消：{e}"))?
+    } else {
+        Default::default()
+    };
     cfg.inference_ep = Some(ep.clone());
     mm_platform::save_config_at(&config_path, &cfg).map_err(|e| format!("配置写入失败：{e}"))?;
     tracing::info!(ep = %ep, "推理后端已更改，重启后生效");
@@ -122,16 +158,12 @@ pub fn download_runtime(
     state: State<'_, AppState>,
     kind: String,
 ) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
     if kind != "cuda" && kind != "cpu" {
         return Err(format!("运行时 {kind} 不支持按需下载"));
     }
-    if RUNTIME_DOWNLOAD_IN_FLIGHT
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(_guard) = InFlightGuard::acquire(&RUNTIME_DOWNLOAD_IN_FLIGHT) else {
         return Ok(()); // 已有下载任务在跑
-    }
+    };
     let endpoints = vec![
         "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0".to_string(),
         state.model_endpoints[0].clone(),
@@ -144,17 +176,20 @@ pub fn download_runtime(
         .to_path_buf();
     let app2 = app.clone();
 
+    // 守卫随闭包移动：线程正常结束或 panic 展开，Drop 都会把标志复位
     std::thread::spawn(move || {
         let manifest = match mm_embed::runtime::runtime_manifest() {
             Ok(m) => m,
             Err(e) => {
                 tracing::error!(reason = %e, "运行时清单解析失败，下载任务终止");
-                RUNTIME_DOWNLOAD_IN_FLIGHT.store(false, Ordering::SeqCst);
+                let _ = RuntimeDownloadFailedEvent { error: e }.emit(&app2);
                 return;
             }
         };
         let Some(variant) = manifest.variant(&kind).cloned() else {
-            RUNTIME_DOWNLOAD_IN_FLIGHT.store(false, Ordering::SeqCst);
+            let error = format!("运行时 {kind} 没有分发清单");
+            tracing::error!(kind = %kind, error = %error, "下载任务终止");
+            let _ = RuntimeDownloadFailedEvent { error }.emit(&app2);
             return;
         };
         let progress = |_name: &str, received: u64, total: u64| {
@@ -173,9 +208,12 @@ pub fn download_runtime(
             }
             Err(e) => {
                 tracing::warn!(code = ?e, kind = %kind, "运行时下载失败");
+                let _ = RuntimeDownloadFailedEvent {
+                    error: e.to_string(),
+                }
+                .emit(&app2);
             }
         }
-        RUNTIME_DOWNLOAD_IN_FLIGHT.store(false, Ordering::SeqCst);
     });
     Ok(())
 }
@@ -222,15 +260,20 @@ pub struct ImportReport {
 /// 从本地目录/zip 导入模型（spec 0008 §3.5）；全部匹配才落文件，否则返回明细
 #[tauri::command]
 #[specta::specta]
-pub fn import_models(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<ImportReport, String> {
-    let manifest = mm_embed::manifest::manifest();
-    let report =
-        mm_embed::runtime::import_models(std::path::Path::new(&path), &manifest, &state.model_dir)
-            .map_err(|e| e.to_string())?;
+pub async fn import_models(app: AppHandle, path: String) -> Result<ImportReport, String> {
+    let Some(_guard) = InFlightGuard::acquire(&IMPORT_MODELS_IN_FLIGHT) else {
+        return Err("已有模型导入任务在运行".into());
+    };
+    // 重活移出 IPC 线程（同步命令内联执行会卡 UI 数秒）：解压 + 约数百 MB 复制 + 重建会话
+    let model_dir = app.state::<AppState>().model_dir.clone();
+    let source = std::path::PathBuf::from(&path);
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let manifest = mm_embed::manifest::manifest();
+        mm_embed::runtime::import_models(&source, &manifest, &model_dir)
+    })
+    .await
+    .map_err(|e| format!("导入任务异常终止：{e}"))?
+    .map_err(|e| e.to_string())?;
     let out = ImportReport {
         imported: i32::try_from(report.imported).unwrap_or(i32::MAX),
         skipped: i32::try_from(report.skipped).unwrap_or(i32::MAX),

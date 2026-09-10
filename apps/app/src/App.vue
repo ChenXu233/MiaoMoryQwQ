@@ -59,12 +59,16 @@ function onGlobalKey(e: KeyboardEvent) {
     closeDrawer();
   }
 }
+// 具名引用：removeEventListener 必须传同一函数对象（内联箭头两边各建一个 = 永远移不掉）
+function onToast(e: Event) {
+  toast((e as CustomEvent<string>).detail);
+}
 
 onMounted(() => {
   window.addEventListener("keydown", onGlobalKey);
   window.addEventListener("mm-rail-changed", onRailChanged);
   // 全局 toast 通道（灯箱等深层组件无 emit 链时用）
-  window.addEventListener("mm-toast", ((e: CustomEvent<string>) => toast(e.detail)) as EventListener);
+  window.addEventListener("mm-toast", onToast);
   let saved: string | null = null;
   try {
     saved = localStorage.getItem("mm-rail");
@@ -77,7 +81,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onGlobalKey);
   window.removeEventListener("mm-rail-changed", onRailChanged);
-  window.removeEventListener("mm-toast", ((e: CustomEvent<string>) => toast(e.detail)) as EventListener);
+  window.removeEventListener("mm-toast", onToast);
 });
 </script>
 

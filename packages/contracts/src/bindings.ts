@@ -88,6 +88,7 @@ export const events = {
 	modelDownloadProgressEvent: makeEvent<ModelDownloadProgressEvent>("model-download-progress-event"),
 	modelReadyEvent: makeEvent<ModelReadyEvent>("model-ready-event"),
 	modelsImportedEvent: makeEvent<ModelsImportedEvent>("models-imported-event"),
+	runtimeDownloadFailedEvent: makeEvent<RuntimeDownloadFailedEvent>("runtime-download-failed-event"),
 	runtimeDownloadProgressEvent: makeEvent<RuntimeDownloadProgressEvent>("runtime-download-progress-event"),
 	runtimeReadyEvent: makeEvent<RuntimeReadyEvent>("runtime-ready-event"),
 };
@@ -282,6 +283,14 @@ export type ModelStatus = {
 
 /**  模型本地导入完成且装配成功 */
 export type ModelsImportedEvent = Record<string, never>;
+
+/**
+ *  运行时包下载/安装失败（终态）：前端据此清除「下载中」并展示原因，
+ *  否则进度事件之后再无任何信号，下载卡永久停留
+ */
+export type RuntimeDownloadFailedEvent = {
+	error: string,
+};
 
 /**  运行时包下载进度（spec 0008 §3.3；复用模型下载进度模式） */
 export type RuntimeDownloadProgressEvent = {

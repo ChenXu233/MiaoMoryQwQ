@@ -14,6 +14,8 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 sha2 = "0.11"
 hex = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# 模型本地导入的唯一临时目录（drop 自动清理；防并发导入互踩）
+tempfile = "3"
 # EP 实现库预检（spec 0008 §3.1：providers_cuda.dll 加载失败即降级，避免 ort 段错误）
 libloading = "0.7"
 serde = { workspace = true }
@@ -28,6 +30,3 @@ ort = { version = "=2.0.0-rc.13", features = ["directml", "cuda", "load-dynamic"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 ort = { version = "=2.0.0-rc.13", features = ["coreml"] }
-
-[dev-dependencies]
-tempfile = "3"
