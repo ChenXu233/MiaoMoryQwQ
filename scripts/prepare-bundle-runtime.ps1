@@ -16,6 +16,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# runtime/dml 是 Windows 专属产物（resources 只在 tauri.windows.conf.json）：
+# mac/linux 构建直接短路，避免误下载 Windows zip 破坏打包
+if (-not $IsWindows -and $env:OS -ne "Windows_NT") {
+    Write-Host "[dml] 非 Windows 平台，跳过（resources 仅 Windows 打包需要）"
+    exit 0
+}
+
 $repo = Split-Path -Parent $PSScriptRoot
 
 $destDirs = @(
