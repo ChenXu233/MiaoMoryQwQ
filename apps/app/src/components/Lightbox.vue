@@ -3,14 +3,16 @@
 // 源离线降级（P5 切片 A1）：原图加载失败 → 标记文件夹 offline → 缩略图 + 状态条 + 重新检查；
 // 在线时角标「原图 · 大小 · 来自文件夹」（UI 永不把缩略图冒充原图）。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ask } from "@tauri-apps/plugin-dialog";
 import {
   commands,
   events,
   type AssetDetail,
   type AssetSummary,
 } from "@miaomory/contracts";
+import { useConfirm } from "../composables/useConfirm";
 import { assetSrc, errorCopy, formatDate } from "../lib/ui";
+
+const { confirm } = useConfirm();
 
 const props = defineProps<{
   items: AssetSummary[];
@@ -135,11 +137,11 @@ async function remove() {
   if (!it || deleting.value) return;
   deleting.value = true;
   try {
-    const ok = await ask("删除这条记录？只从 MiaoMory 移除，不会删除你的原文件。", {
-      title: "删除确认",
-      kind: "warning",
+    const ok = await confirm({
+      title: "删除这条记录？",
+      message: "只从 MiaoMory 移除记录，你的原文件不会被改动。",
       okLabel: "删除",
-      cancelLabel: "取消",
+      danger: true,
     });
     if (!ok) return;
     const res = await commands.deleteAssets([it.asset_id]);
@@ -165,10 +167,11 @@ function onKeydown(e: KeyboardEvent) {
 
 <template>
   <div
-    class="fixed inset-0 z-50 flex flex-col bg-black/90"
+    class="fixed inset-0 z-50 flex flex-col bg-black/95 backdrop-blur-md"
     role="dialog"
     aria-modal="true"
     aria-label="照片预览"
+    style="padding-top: var(--mm-tb-h)"
   >
     <header class="flex items-center justify-between px-6 py-3 text-sm text-white/90">
       <span>{{ current ? formatDate(current.taken_at) : "" }}</span>

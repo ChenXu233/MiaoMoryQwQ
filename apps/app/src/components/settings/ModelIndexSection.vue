@@ -23,9 +23,11 @@ const epNotice = ref<string | null>(null);
 const epError = ref<string | null>(null);
 const importReport = ref<string | null>(null);
 
-const modelState = computed<"missing" | "downloading" | "ready">(() => {
-  if (model.modelReady.value) return "ready";
+const modelState = computed<"loading" | "missing" | "downloading" | "ready">(() => {
+  if (model.modelReady.value === true) return "ready";
   if (model.downloading.value) return "downloading";
+  // modelReady === null = 状态查询尚未返回：显示加载中，不渲染「未就绪」断言
+  if (model.modelReady.value === null) return "loading";
   return "missing";
 });
 
@@ -120,7 +122,9 @@ function epLabel(o: InferenceInfo["options"][number]): string {
               ? "语义模型已就绪"
               : modelState === "downloading"
                 ? "正在下载语义模型"
-                : "语义模型未就绪"
+                : modelState === "loading"
+                  ? "正在读取模型状态…"
+                  : "语义模型未就绪"
           }}
         </div>
         <div class="set-d">导入索引与搜索共用一套中文图文语义模型（约 200MB，仅一次）。</div>
@@ -149,7 +153,7 @@ function epLabel(o: InferenceInfo["options"][number]): string {
       {{ Math.round(model.downloading.value.total / 1e6) }} MB（已下载部分不会丢失）
     </div>
     <p class="set-d" style="margin: 10px 0 0">
-      🔒 模型只在本机运行，照片不会上传；下载可中断，已下载部分不会丢失。
+      下载可中断，已下载部分不会丢失。
     </p>
     <div class="ops">
       <span v-if="importReport" role="status" class="hint" style="color: var(--mm-success)">
@@ -193,18 +197,21 @@ function epLabel(o: InferenceInfo["options"][number]): string {
         {{ infInfo.degraded_reason }}
       </p>
 
-    <div class="seg" role="group" aria-label="推理后端">
-      <button
-        v-for="o in infInfo?.options ?? []"
-        :key="o.kind"
-        :class="{ on: infInfo?.current_ep === o.kind }"
-        :disabled="infInfo?.current_ep === o.kind"
-        @click="chooseEp(o.kind)"
-      >
-        {{ epLabel(o) }}
-      </button>
-    </div>
-    <p class="set-d" style="margin: 8px 0 0">{{ selectedHint }}</p>
+    <template v-if="infInfo">
+      <div class="seg" role="group" aria-label="推理后端">
+        <button
+          v-for="o in infInfo.options"
+          :key="o.kind"
+          :class="{ on: infInfo.current_ep === o.kind }"
+          :disabled="infInfo.current_ep === o.kind"
+          @click="chooseEp(o.kind)"
+        >
+          {{ epLabel(o) }}
+        </button>
+      </div>
+      <p class="set-d" style="margin: 8px 0 0">{{ selectedHint }}</p>
+    </template>
+    <p v-else class="set-d loading-hint" style="margin: 8px 0 0">正在读取推理后端状态…</p>
 
     <!-- CUDA 运行时下载 / 导入 -->
     <template v-if="showCudaDownload">
@@ -239,7 +246,7 @@ function epLabel(o: InferenceInfo["options"][number]): string {
       {{ epError }}
     </p>
     <p class="set-d" style="margin: 10px 0 0">
-      切换后端需要重启 MiaoMory；推理始终只在本机进行。
+      切换后端需要重启 MiaoMory 生效。
     </p>
   </div>
 </template>

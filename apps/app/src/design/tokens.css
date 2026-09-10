@@ -4,6 +4,7 @@
  * v5 UI 对齐：新增玻璃拟态（柔和版）token——来源 ui-redesign-proto.html。
  */
 :root {
+  --mm-tb-h: 38px; /* 自绘标题栏高度(2026-09-11) */
   --mm-bg: #fafaf9; /* 页面背景（stone-50） */
   --mm-surface: #ffffff; /* 卡片/浮层背景 */
   --mm-surface-2: #f5f5f4; /* 次级表面（hover、内嵌块） */

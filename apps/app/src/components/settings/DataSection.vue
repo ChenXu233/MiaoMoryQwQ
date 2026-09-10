@@ -1,15 +1,16 @@
 <script setup lang="ts">
 // 设置 · 数据与存储（spec 0006 §3.0 分类三）：数据位置、来源文件夹、存储占用、失败文件。
 import { computed, onMounted, ref } from "vue";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { open as pickDirectory } from "@tauri-apps/plugin-dialog";
 import { commands, type DataInfo, type FailedItem, type StorageUsage } from "@miaomory/contracts";
 import { useFolders } from "../../composables/useFolders";
 import { useEmbedJob } from "../../composables/useEmbedJob";
+import { useConfirm } from "../../composables/useConfirm";
 import { formatBytes } from "../../lib/format";
 
-const { folders, recheck, relocate } = useFolders();
+const { folders, foldersReady, recheck, relocate } = useFolders();
 const { refresh: refreshEmbed } = useEmbedJob();
+const { confirm } = useConfirm();
 
 const info = ref<DataInfo | null>(null);
 const usage = ref<StorageUsage | null>(null);
@@ -84,13 +85,14 @@ async function relocateFolder(folderId: number, label: string) {
   }
 }
 
-// 重新向量化（2026-09-10 裁决：设置页集中入口）
+// 重新向量化（2026-09-10 裁决：设置页集中入口；确认用自绘弹窗）
 async function reembedFolder(folderId: number, label: string) {
   folderError.value = null;
-  const ok = await ask(
-    `重建「${label}」的语义向量？重建期间这个工作区的语义搜索会暂时不可用，直到重建完成。`,
-    { title: "重新向量化", kind: "warning", okLabel: "重建", cancelLabel: "取消" },
-  );
+  const ok = await confirm({
+    title: `重建「${label}」的语义向量？`,
+    message: "重建期间这个工作区的语义搜索会暂时不可用，直到重建完成。",
+    okLabel: "重建",
+  });
   if (!ok) return;
   const res = await commands.reindexFolder(folderId);
   if (res.status === "ok") {
@@ -103,10 +105,11 @@ async function reembedFolder(folderId: number, label: string) {
 
 async function reembedAll() {
   folderError.value = null;
-  const ok = await ask(
-    "重建全部语义向量？所有照片的语义搜索在重建完成前会暂时不可用。",
-    { title: "重建全部向量", kind: "warning", okLabel: "重建", cancelLabel: "取消" },
-  );
+  const ok = await confirm({
+    title: "重建全部语义向量？",
+    message: "所有照片的语义搜索在重建完成前会暂时不可用。",
+    okLabel: "重建",
+  });
   if (!ok) return;
   const res = await commands.reindexAll();
   if (res.status === "ok") {
@@ -130,7 +133,7 @@ onMounted(() => void loadStatic());
     <div class="set-row" style="padding-top: 0">
       <div class="set-info">
         <div class="set-t">数据位置</div>
-        <div class="set-d">所有数据都保存在这台电脑上，MiaoMory 不会上传任何内容。</div>
+        <div class="set-d">索引、缩略图与模型的存放根目录。</div>
       </div>
       <span v-if="info" class="mode-badge">{{ modeLabel }}</span>
     </div>
@@ -154,6 +157,7 @@ onMounted(() => void loadStatic());
         </span>
       </div>
     </div>
+    <p v-else class="set-d loading-hint" style="margin-top: 10px">读取中…</p>
     <p v-if="notice" role="status" class="set-d" style="color: var(--mm-success); margin-top: 10px">
       {{ notice }}
     </p>
@@ -220,6 +224,7 @@ onMounted(() => void loadStatic());
         </button>
       </div>
     </div>
+    <p v-else-if="!foldersReady" class="set-d loading-hint" style="margin-top: 10px">读取中…</p>
     <p v-else class="set-d" style="margin-top: 10px">还没有导入过文件夹。</p>
     <p v-if="folderNotice" role="status" class="set-d" style="color: var(--mm-success); margin-top: 8px">
       {{ folderNotice }}
@@ -234,7 +239,7 @@ onMounted(() => void loadStatic());
     <div class="set-row" style="padding-top: 0">
       <div class="set-info">
         <div class="set-t">存储占用</div>
-        <div class="set-d">索引与缩略图只为本机服务。</div>
+        <div class="set-d">照片记录、索引数据库与缩略图的体量。</div>
       </div>
     </div>
     <div v-if="usage" class="path-rows">

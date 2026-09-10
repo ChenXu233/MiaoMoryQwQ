@@ -2,7 +2,9 @@
 import { ref } from "vue";
 import { commands, events } from "@miaomory/contracts";
 
-const modelReady = ref(false);
+// 三态:null = 状态查询尚未返回(加载中,true/false = 已知状态)。
+// 初始渲染成「未就绪」是把未知断言成负面状态——设计硬伤,禁止。
+const modelReady = ref<boolean | null>(null);
 const modelFilesMissing = ref<string[]>([]);
 const downloading = ref<{ file: string; received: number; total: number } | null>(null);
 let started = false;
@@ -12,7 +14,6 @@ async function refresh() {
   modelReady.value = status.ready && status.loaded;
   modelFilesMissing.value = status.files_missing;
 }
-
 export function useModelStatus() {
   if (!started) {
     started = true;

@@ -1,11 +1,18 @@
 <script setup lang="ts">
-// App 壳（UI 对齐 v2/v9）：环境柔光 + 侧栏（桌面常驻/窄屏抽屉）+ 内容区路由 +
-// 底部 Dock（窄屏）+ 悬浮圆钮 + 导入任务卡 + 通知。业务逻辑全部在 composables。
+// App 壳（UI 对齐 v2/v9）：环境柔光 + 自绘标题栏 + 侧栏（桌面常驻/窄屏抽屉）+
+// 内容区路由 + 底部 Dock（窄屏）+ 悬浮圆钮 + 任务卡栈 + 全局确认/右键菜单 + 通知。
 import { onBeforeUnmount, onMounted, ref } from "vue";
+import { commands } from "@miaomory/contracts";
 import { useRoute } from "./lib/router";
 import { useImportJob } from "./composables/useImportJob";
 import { useLightbox } from "./composables/useLightbox";
 import { useModelStatus } from "./composables/useModelStatus";
+import { useEmbedJob } from "./composables/useEmbedJob";
+import { useConfirm } from "./composables/useConfirm";
+import { useContextMenu } from "./composables/useContextMenu";
+import TitleBar from "./components/shell/TitleBar.vue";
+import UiConfirm from "./components/shell/UiConfirm.vue";
+import UiContextMenu from "./components/shell/UiContextMenu.vue";
 import AppSidebar from "./components/shell/AppSidebar.vue";
 import BottomDock from "./components/shell/BottomDock.vue";
 import ImportCard from "./components/shell/ImportCard.vue";
@@ -20,6 +27,9 @@ const route = useRoute();
 const importJob = useImportJob();
 const lightbox = useLightbox();
 useModelStatus(); // 单例：启动即检查模型并自动下载（规格 0004）
+const { refresh: refreshEmbed } = useEmbedJob();
+const { confirm } = useConfirm();
+const { openFor: openContextMenu, close: closeContextMenu } = useContextMenu();
 const toastMsg = ref<string | null>(null);
 let toastTimer: number | undefined;
 const rail = ref(false); // 侧边栏收起态（body.rail，2026-09-09 所有者裁定）
@@ -28,6 +38,86 @@ function toast(msg: string) {
   toastMsg.value = msg;
   window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => (toastMsg.value = null), 2600);
+}
+
+// ---- 右键动作（照片格/工作区行由 data-* 属性识别，2026-09-11 所有者裁定）----
+
+async function reembedAsset(assetId: number) {
+  const res = await commands.reindexAssets([assetId]);
+  toast(res.status === "ok" ? "已重新向量化这张照片，进度见右下角" : `重建失败：${res.error}`);
+}
+
+async function deleteAsset(assetId: number) {
+  const ok = await confirm({
+    title: "删除这条记录？",
+    message: "只从 MiaoMory 移除记录，你的原文件不会被改动。",
+    okLabel: "删除",
+    danger: true,
+  });
+  if (!ok) return;
+  const res = await commands.deleteAssets([assetId]);
+  if (res.status === "ok") {
+    window.dispatchEvent(new CustomEvent("mm-library-changed"));
+    toast("已删除记录");
+  } else {
+    toast(`删除失败：${res.error}`);
+  }
+}
+
+async function reembedFolder(folderId: number, label: string) {
+  const ok = await confirm({
+    title: `重建「${label}」的语义向量？`,
+    message: "重建期间这个工作区的语义搜索会暂时不可用，直到重建完成。",
+    okLabel: "重建",
+  });
+  if (!ok) return;
+  const res = await commands.reindexFolder(folderId);
+  if (res.status === "ok") {
+    await refreshEmbed();
+    toast(`已开始重建（${res.data} 张），进度见右下角`);
+  } else {
+    toast(`重建失败：${res.error}`);
+  }
+}
+
+async function recheckFolderById(folderId: number, label: string) {
+  const res = await commands.recheckFolder(folderId);
+  toast(
+    res.status === "ok" && res.data.status === "online"
+      ? `「${label}」已恢复在线`
+      : `「${label}」仍不可访问`,
+  );
+}
+
+/** 右键拦截：输入区放行原生（复制/粘贴）；照片/工作区给上下文动作；其余一律屏蔽原生菜单 */
+function onContextMenu(e: MouseEvent) {
+  const el = e.target as HTMLElement;
+  if (el.closest("input, textarea, [contenteditable='true']")) return;
+  e.preventDefault();
+  const tile = el.closest("[data-asset-id]");
+  if (tile) {
+    const id = Number(tile.getAttribute("data-asset-id"));
+    if (Number.isFinite(id)) {
+      openContextMenu(e, [
+        { label: "重新向量化", action: () => void reembedAsset(id) },
+        { label: "删除记录", danger: true, action: () => void deleteAsset(id) },
+      ]);
+      return;
+    }
+  }
+  const folder = el.closest("[data-folder-id]");
+  if (folder) {
+    const fid = Number(folder.getAttribute("data-folder-id"));
+    const label = folder.getAttribute("data-folder-label") ?? `工作区 #${fid}`;
+    if (Number.isFinite(fid)) {
+      openContextMenu(e, [
+        { label: "重新向量化", action: () => void reembedFolder(fid, label) },
+        { label: "重新检查", action: () => void recheckFolderById(fid, label) },
+      ]);
+      return;
+    }
+  }
+  closeContextMenu();
 }
 
 function toggleDrawer() {
@@ -67,6 +157,7 @@ function onToast(e: Event) {
 onMounted(() => {
   window.addEventListener("keydown", onGlobalKey);
   window.addEventListener("mm-rail-changed", onRailChanged);
+  window.addEventListener("contextmenu", onContextMenu, true);
   // 全局 toast 通道（灯箱等深层组件无 emit 链时用）
   window.addEventListener("mm-toast", onToast);
   let saved: string | null = null;
@@ -81,6 +172,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onGlobalKey);
   window.removeEventListener("mm-rail-changed", onRailChanged);
+  window.removeEventListener("contextmenu", onContextMenu, true);
   window.removeEventListener("mm-toast", onToast);
 });
 </script>
@@ -92,6 +184,7 @@ onBeforeUnmount(() => {
     <div class="amb amb-b" />
     <div class="amb amb-c" />
 
+    <TitleBar />
     <AppSidebar @toast="toast" />
 
     <!-- 侧边栏收起后的恢复钮（左上悬浮） -->
@@ -142,6 +235,9 @@ onBeforeUnmount(() => {
       </button>
     </div>
     <div v-if="toastMsg" class="toast" role="status">{{ toastMsg }}</div>
+
+    <UiConfirm />
+    <UiContextMenu />
 
     <Lightbox
       v-if="lightbox.index.value !== null"

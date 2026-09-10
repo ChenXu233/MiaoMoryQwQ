@@ -3,6 +3,7 @@ import { ref } from "vue";
 import { commands, events, type FolderInfo } from "@miaomory/contracts";
 
 const folders = ref<FolderInfo[]>([]);
+const foldersReady = ref(false); // 首次加载完成（区分「加载中」与「空」——渲染成确定空态是设计硬伤）
 let started = false;
 
 export function useFolders() {
@@ -14,7 +15,10 @@ export function useFolders() {
   }
   async function load() {
     const res = await commands.listFolders();
-    if (res.status === "ok") folders.value = res.data;
+    if (res.status === "ok") {
+      folders.value = res.data;
+      foldersReady.value = true;
+    }
   }
   void load();
   async function recheck(folderId: number): Promise<FolderInfo | null> {
@@ -27,5 +31,5 @@ export function useFolders() {
     void load();
     return res.status === "ok" ? res.data : res.error;
   }
-  return { folders, load, recheck, relocate };
+  return { folders, foldersReady, load, recheck, relocate };
 }

@@ -1,54 +1,24 @@
 <script setup lang="ts">
 // 侧边栏（UI 对齐 v2/v9）：桌面常驻挤压式，窄屏为抽屉（body.drawer）。
-// 导航（首页/照片库）+ 文件夹区（计数 + 状态点 + 建索引徽标 + 悬停「⋯」重建菜单 + ＋导入）+
+// 导航（首页/照片库）+ 文件夹区（计数 + 状态点 + 建索引徽标 + ＋导入）+
 // 底部：左齿轮设置 / 右收起钮（body.rail，2026-09-09 所有者裁定）。
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { ask } from "@tauri-apps/plugin-dialog";
-import { commands, type FolderInfo } from "@miaomory/contracts";
+// 工作区右键菜单（重新向量化/重新检查）由 App.vue 全局右键接管（data-folder-id）。
+import { computed } from "vue";
 import { useRoute, navigate } from "../../lib/router";
 import { useFolders } from "../../composables/useFolders";
 import { useImportJob } from "../../composables/useImportJob";
-import { useEmbedJob } from "../../composables/useEmbedJob";
 import { useWorkspaceSelection } from "../../composables/useWorkspaceSelection";
 
 const route = useRoute();
 const { folders } = useFolders();
 const { selectedFolderId, selectFolder } = useWorkspaceSelection();
 const importJob = useImportJob();
-const { refresh: refreshEmbed } = useEmbedJob();
 
 const emit = defineEmits<{ toast: [msg: string] }>();
 
 const folderItems = computed(() =>
   folders.value.filter((f) => f.path !== "" || f.asset_count > 0),
 );
-
-// 行内「⋯」菜单：重新向量化（2026-09-10 裁决：侧栏直达入口）
-const menuFor = ref<number | null>(null);
-
-function toggleMenu(id: number) {
-  menuFor.value = menuFor.value === id ? null : id;
-}
-
-function onWindowClick(e: MouseEvent) {
-  if (!(e.target as HTMLElement).closest(".folder-row")) menuFor.value = null;
-}
-
-async function reindexFolder(f: FolderInfo) {
-  menuFor.value = null;
-  const ok = await ask(
-    `重建「${f.label || f.path}」的语义向量？重建期间这个工作区的语义搜索会暂时不可用，直到重建完成。`,
-    { title: "重新向量化", kind: "warning", okLabel: "重建", cancelLabel: "取消" },
-  );
-  if (!ok) return;
-  const res = await commands.reindexFolder(f.folder_id);
-  if (res.status === "ok") {
-    await refreshEmbed();
-    emit("toast", `已开始重建「${f.label || f.path}」的索引（${res.data} 张），进度见右下角`);
-  } else {
-    emit("toast", `重建失败：${res.error}`);
-  }
-}
 
 async function addFolder() {
   await importJob.pickFolder();
@@ -78,9 +48,6 @@ function collapse() {
   }
   window.dispatchEvent(new CustomEvent("mm-rail-changed"));
 }
-
-onMounted(() => window.addEventListener("click", onWindowClick));
-onBeforeUnmount(() => window.removeEventListener("click", onWindowClick));
 </script>
 
 <template>
@@ -119,11 +86,17 @@ onBeforeUnmount(() => window.removeEventListener("click", onWindowClick));
       </button>
     </div>
     <div class="folder-list">
-      <div v-for="f in folderItems" :key="f.folder_id" class="folder-row">
+      <div
+        v-for="f in folderItems"
+        :key="f.folder_id"
+        class="folder-row"
+        :data-folder-id="f.folder_id"
+        :data-folder-label="f.label || f.path"
+      >
         <button
           class="folder-item"
           :class="{ on: selectedFolderId === String(f.folder_id) }"
-          :title="f.status !== 'online' ? `文件夹${f.status === 'offline' ? '离线' : '路径丢失'}：${f.path}` : f.path"
+          :title="f.status !== 'online' ? `文件夹${f.status === 'offline' ? '离线' : '路径丢失'}：${f.path}（右键可重新向量化/重新检查）` : `${f.path}（右键可重新向量化/重新检查）`"
           @click="pickFolder(String(f.folder_id))"
         >
           <span
@@ -134,18 +107,6 @@ onBeforeUnmount(() => window.removeEventListener("click", onWindowClick));
           <span v-if="f.pending_index > 0" class="idx num" title="建立索引中">◌ {{ f.pending_index }}</span>
           <span class="c num">{{ f.asset_count }}</span>
         </button>
-        <button
-          class="folder-more"
-          :class="{ on: menuFor === f.folder_id }"
-          title="工作区操作"
-          aria-label="工作区操作"
-          @click.stop="toggleMenu(f.folder_id)"
-        >
-          <svg style="width: 14px; height: 14px" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.9" /><circle cx="12" cy="12" r="1.9" /><circle cx="19" cy="12" r="1.9" /></svg>
-        </button>
-        <div v-if="menuFor === f.folder_id" class="folder-menu">
-          <button @click="reindexFolder(f)">重新向量化</button>
-        </div>
       </div>
     </div>
 

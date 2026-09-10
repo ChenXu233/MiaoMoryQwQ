@@ -30,6 +30,7 @@ const ratio = computed(() => {
 <template>
   <button
     class="tile"
+    :data-asset-id="item.asset_id"
     :style="ratio ? { aspectRatio: ratio } : undefined"
     :aria-label="`查看照片（${formatDate(item.taken_at)}）`"
     @click="emit('open', item)"

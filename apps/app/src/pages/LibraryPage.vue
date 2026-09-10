@@ -23,6 +23,8 @@ const isLoading = computed(() => library.loading.value);
 const isExhausted = computed(() => library.exhausted.value);
 // 空库判定与工作区过滤无关：看全部文件夹的资产总数（过滤后无照片走 sp-empty 分支）
 const hasAnyPhoto = computed(() => folders.value.some((f) => f.asset_count > 0));
+// 空态必须等首份数据到位:加载期间渲染「选择照片文件夹」会把未知断言成空(设计硬伤)
+const foldersReady = computed(() => useFolders().foldersReady.value);
 const selectedFolder = computed(() =>
   folders.value.find((f) => String(f.folder_id) === selectedFolderId.value),
 );
@@ -76,7 +78,7 @@ onUnmounted(() => {
 <template>
   <div class="page">
     <!-- 空库：功能优先，无标语（v2 裁定） -->
-    <div v-if="!hasAnyPhoto && !importJob.job.value" class="empty-lib">
+    <div v-if="foldersReady && !hasAnyPhoto && !importJob.job.value" class="empty-lib">
       <button class="empty-card" @click="importJob.pickFolder()">
         <div class="t">选择照片文件夹</div>
       </button>

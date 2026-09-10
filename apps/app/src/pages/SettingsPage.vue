@@ -48,7 +48,7 @@ onMounted(() => {
   <div class="page">
     <div class="page-wrap">
       <h1 class="page-title">设置</h1>
-      <p class="page-sub">外观与语言立即生效；数据与模型只保存在本机。</p>
+      <p class="page-sub">外观即时生效；模型与数据位置在此管理。</p>
 
       <div class="settings-layout">
         <nav class="settings-nav" aria-label="设置分类">
