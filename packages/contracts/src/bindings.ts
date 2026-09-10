@@ -314,6 +314,11 @@ export type SearchHit = {
 	summary: AssetSummary,
 	/**  RRF 归一分（0~1），越大越相关 */
 	score: number | null,
+	/**
+	 *  语义相似度（余弦 0~1，两侧向量已 L2 归一化；纯文件名命中 = null）。
+	 *  展示用，不参与排序；无阈值截断（2026-09-11 所有者裁定：先显示不设阈值）
+	 */
+	similarity: number | null,
 	/**  命中来源：both / semantic / text（排序可解释，白皮书 §4.6） */
 	matched: string,
 	/**  结果元数据（UI 对齐 v6：文件名 / 大小 / 所属工作区） */

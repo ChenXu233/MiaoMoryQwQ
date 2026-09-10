@@ -180,7 +180,8 @@ pub async fn search_assets(
     } else {
         k
     };
-    let mut semantic_streams: Vec<Vec<u64>> = Vec::new();
+    // 每路保留 (asset_id, cosine)：两侧向量均 L2 归一化，cos = 1 − d²/2，clamp 到 [0,1]
+    let mut semantic_streams: Vec<Vec<(u64, f64)>> = Vec::new();
     for ix in &indexers {
         let Ok(qvec) = ix.embed_text(trimmed) else {
             // 静默吞曾让"语义流故障"与"真无结果"不可区分（搜'花'返回空的无声根因之一）
@@ -195,15 +196,29 @@ pub async fn search_assets(
                 continue;
             }
         };
-        let ids: Vec<u64> = hits
+        let pairs: Vec<(u64, f64)> = hits
             .into_iter()
-            .filter_map(|(asset_id, _)| store.get_asset(asset_id).ok().flatten())
-            .filter(|row| passes_filters(row))
-            .map(|row| u64::try_from(row.asset_id).unwrap_or(0))
+            .filter_map(|(asset_id, dist)| {
+                let row = store.get_asset(asset_id).ok().flatten()?;
+                if !passes_filters(&row) {
+                    return None;
+                }
+                let d = f64::from(dist);
+                let cos = (1.0 - d * d / 2.0).clamp(0.0, 1.0);
+                Some((u64::try_from(asset_id).unwrap_or(0), cos))
+            })
             .collect();
-        semantic_streams.push(ids);
+        semantic_streams.push(pairs);
     }
-    let semantic_refs: Vec<&[u64]> = semantic_streams.iter().map(|v| v.as_slice()).collect();
+    let semantic_id_lists: Vec<Vec<u64>> = semantic_streams
+        .iter()
+        .map(|v| v.iter().map(|p| p.0).collect())
+        .collect();
+    let semantic_refs: Vec<&[u64]> = semantic_id_lists.iter().map(|v| v.as_slice()).collect();
+    let similarity_of: std::collections::HashMap<u64, f64> = semantic_streams
+        .iter()
+        .flat_map(|v| v.iter().copied())
+        .collect();
 
     // ---- 文本流（文件名；FTS 语法已由 build_match_query 清洗）----
     let match_query = Store::build_match_query(trimmed);
@@ -255,10 +270,12 @@ pub async fn search_assets(
                     width: row.width,
                     height: row.height,
                     taken_at: row.taken_at as f64,
-                    // 纯文本流命中 = 语义索引尚未建立（网格呼吸点语义一致）
-                    indexed: hit.matched.slug() != "text",
-                },
-                score: (hit.score / max_score * 1000.0).round() / 1000.0,
+                // 纯文本流命中 = 语义索引尚未建立（网格呼吸点语义一致）
+                indexed: hit.matched.slug() != "text",
+            },
+            score: (hit.score / max_score * 1000.0).round() / 1000.0,
+            // 语义相似度（余弦 0~1；纯文件名命中为 null）——展示用，不参与排序
+            similarity: similarity_of.get(&hit.asset_id).copied(),
                 matched: hit.matched.slug().to_string(),
                 file_name,
                 size_bytes: row.size.map(|s| s as f64).unwrap_or(0.0),

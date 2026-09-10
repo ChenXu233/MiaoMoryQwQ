@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 悬浮搜索（照片库顶部，UI 对齐 v2/v8）：实时搜 + Ctrl K 聚焦；范围跟随侧栏选择
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import type { AssetSummary } from "@miaomory/contracts";
+import type { AssetSummary, SearchHit } from "@miaomory/contracts";
 import { useSearch } from "../../composables/useSearch";
 import { useModelStatus } from "../../composables/useModelStatus";
 import { useFolders } from "../../composables/useFolders";
@@ -54,8 +54,14 @@ function openHit(item: AssetSummary) {
   );
 }
 
-function badgeOf(matched: string): string {
-  return matched === "semantic" ? "语义" : matched === "text" ? "文件名" : "";
+// 命中徽标：来源 + 语义相似度百分比（余弦；纯文件名命中无相似度）
+function badgeOf(h: SearchHit): string {
+  const base = h.matched === "semantic" ? "语义" : h.matched === "text" ? "文件名" : "";
+  if (h.similarity != null) {
+    const pct = Math.round(Math.max(0, h.similarity) * 100);
+    return base ? `${base} ${pct}%` : `${pct}%`;
+  }
+  return base;
 }
 
 function onWindowClick(e: MouseEvent) {
@@ -126,7 +132,7 @@ onBeforeUnmount(() => {
           v-for="h in hits"
           :key="h.summary.asset_id"
           :item="h.summary"
-          :badge="badgeOf(h.matched)"
+          :badge="badgeOf(h)"
           @open="openHit"
         />
       </div>
@@ -143,7 +149,7 @@ onBeforeUnmount(() => {
               {{ formatDate(h.summary.taken_at) }} · {{ h.folder_label }}
             </span>
           </span>
-          <span v-if="badgeOf(h.matched)" class="row-badge">{{ badgeOf(h.matched) }}</span>
+          <span v-if="badgeOf(h)" class="row-badge">{{ badgeOf(h) }}</span>
         </button>
       </div>
     </div>
