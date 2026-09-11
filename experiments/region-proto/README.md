@@ -77,6 +77,29 @@ leave-one-out 同语义簇命中率:
 **当前定案管线**:SAM 区域 → CLIP 编码(NIOU 去重后)→ PCA-64 签名(聚类/存储/检索)
 → 时空调制在线 DP-means(原型空间)→ MaxSim 检索;频域负责去重与结构分组。
 
+## 晚交互实验(2026-09-11,patch_maxsim.py):patch-MaxSim 精排 vs 单向量余弦
+
+所有者猜想(DeepSeek-OCR 式 ~300 视觉 token + 快速注意力匹配 > 余弦)验证:
+DINOv2 @224 → 每区域 256 patch token(≈300 token 量级),级联评估
+(PCA-64 pooled 签名粗排 top-100 → 候选内 MaxSim 精排 vs 候选内余弦直接 top-k),
+100 查询,同语义簇命中率:
+
+| 精排方式 | hit@10 | hit@50 |
+|---|---|---|
+| 候选内 pooled 余弦 | 0.038 | 0.032 |
+| **候选内 patch-MaxSim** | **0.086(×2.3)** | **0.05(×1.6)** |
+
+**用户猜想验证:注意力匹配在精排阶段显著优于余弦。** 架构含义:级联各取所长——
+便宜签名粗排(余弦)+ 贵而准的晚交互精排(MaxSim)。
+
+口径局限(诚实记录):评估标签是 CLIP-32 簇,而检索在 DINO 空间——DINO 近邻的
+CLIP 标签一致率被粒度效应压低(树叶细簇互为 DINO 近邻但标签不同),绝对值因此
+偏低;但 MaxSim vs 余弦是同特征内部公平对比,相对增益可信。NMI 0.498 与近邻
+低 hit 可共存:划分级对应 ≠ 局部邻域结构一致。
+后续:用 CLIP ViT 的 patch token(若可从 int8 onnx 取出)做同特征 MaxSim+CLIP 标签
+评估;DeepSeek-OCR vision token 路线需训练「token→检索空间」投影(其对齐存在于
+自身 decoder 隐空间,拿来做检索是跨空间迁移)。
+
 ## CLIP 偏移检验 + 层级/多轴验证(2026-09-11,dino_check.py / hierarchy.py)
 
 所有者质疑:锚点法是 zero-shot 分类不是聚类;聚类是否只是 CLIP 世界观的投影?
