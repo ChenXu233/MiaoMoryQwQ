@@ -21,7 +21,7 @@ const PIX_MEAN: [f32; 3] = [123.675, 116.28, 103.53];
 const PIX_STD: [f32; 3] = [58.395, 57.12, 57.375];
 const SAM_INPUT: usize = 1024;
 const MASK_SIZE: usize = 256;
-const GRID: usize = 8; // 每批 8×8 = 64 点（ONNX 固定批量）
+const GRID: usize = 4; // 每批 8×8 = 64 点（ONNX 固定批量）
 const GROUPS: usize = 16; // 批次数（错位网格 → 全图 1024 采样点）
 const MASK_FRAC_MIN: f32 = 0.0008;
 const MASK_FRAC_MAX: f32 = 0.85;
