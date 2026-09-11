@@ -130,15 +130,24 @@ pub fn run() {
                 .ok();
             // 运行时放行的目录不跨重启（scope 每次启动重建）——重启后原图全部 403,
             // 前端误报「源离线」把整个文件夹置 offline（一票否决缺陷的真正根因）。
-            // 启动时对所有已注册文件夹重新放行。
+            // 启动时对所有已注册文件夹重新放行：不按状态过滤，offline 文件夹漏放行
+            // 会永远 403、永远回不到 online（重检只翻 DB 状态、不放行 scope，解不了套）。
             {
                 if let Ok(store) = mm_store::Store::open(&paths.db_path()) {
                     if let Ok(folders) = store.list_folders() {
                         for f in folders {
-                            if f.status == "online" && !f.path.is_empty() {
-                                let _ = app
-                                    .asset_protocol_scope()
-                                    .allow_directory(PathBuf::from(&f.path), true);
+                            if f.path.is_empty() {
+                                continue;
+                            }
+                            let path = PathBuf::from(&f.path);
+                            let _ =
+                                app.asset_protocol_scope().allow_directory(&path, true);
+                            // offline/missing 是运行期判定，不把误报持久为真相：
+                            // 磁盘实际可达即恢复 online。不在此做 online → missing 的
+                            // 降级——启动瞬间网络盘可能尚未挂载，误判 missing 会让
+                            // watcher 永久跳过该文件夹；missing 交给主动重检判定。
+                            if f.status != "online" && path.is_dir() {
+                                let _ = store.set_folder_status(f.folder_id, "online");
                             }
                         }
                     }

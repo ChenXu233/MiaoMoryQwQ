@@ -2,7 +2,7 @@
 //! 离线为一等状态：浏览/搜索永不受阻，只有原图访问降级（缩略图 + 状态条）。
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event;
 
 use crate::events::FolderStatusChangedEvent;
@@ -58,7 +58,9 @@ pub fn list_folders(state: State<'_, AppState>) -> Result<Vec<FolderInfo>, Strin
         .collect())
 }
 
-/// 主动重检：路径存在 → online，不存在 → missing；广播状态变化
+/// 主动重检：路径存在 → online，不存在 → missing；广播状态变化。
+/// 恢复 online 时补放行 asset scope：scope 每次启动重建，只翻 DB 状态不放行的话，
+/// 原图继续 403 又被一票否决打回 offline——重检永远解不了套。
 #[tauri::command]
 #[specta::specta]
 pub async fn recheck_folder(
@@ -70,6 +72,15 @@ pub async fn recheck_folder(
     let status = store
         .recheck_folder(i64::from(folder_id))
         .map_err(mode_err)?;
+    if status == "online" {
+        if let Some(folder) = store.get_folder(i64::from(folder_id)).map_err(mode_err)? {
+            if !folder.path.is_empty() {
+                let _ = app
+                    .asset_protocol_scope()
+                    .allow_directory(std::path::PathBuf::from(&folder.path), true);
+            }
+        }
+    }
     let _ = FolderStatusChangedEvent {
         folder_id,
         status: status.clone(),
@@ -94,6 +105,10 @@ pub async fn relocate_folder(
     store
         .relocate_folder(i64::from(folder_id), &new_path)
         .map_err(mode_err)?;
+    // 新位置同样要放行 asset scope，否则原图 403 又被打回 offline
+    let _ = app
+        .asset_protocol_scope()
+        .allow_directory(std::path::PathBuf::from(&new_path), true);
     let _ = FolderStatusChangedEvent {
         folder_id,
         status: "online".into(),
@@ -102,7 +117,9 @@ pub async fn relocate_folder(
     folder_info(&store, i64::from(folder_id))
 }
 
-/// 前端原图加载失败回调（被动检测）：该文件夹标记 offline 并广播（一次性提示由前端控制）
+/// 前端原图加载失败回调（被动检测）：后端先核实该文件是否真的不在磁盘上。
+/// 文件还在 = scope 丢失/瞬时错误（如 403），不打 offline——一票否决把整个
+/// 文件夹误标 offline 的根因；改为补放行来源目录并把误标的 offline 拉回 online。
 #[tauri::command]
 #[specta::specta]
 pub async fn report_original_missing(
@@ -115,14 +132,35 @@ pub async fn report_original_missing(
         .get_asset(i64::from(asset_id))
         .map_err(mode_err)?
         .ok_or("asset not found")?;
-    store
-        .set_folder_status(row.folder_id, "offline")
-        .map_err(mode_err)?;
-    let _ = FolderStatusChangedEvent {
-        folder_id: i32::try_from(row.folder_id).unwrap_or(0),
-        status: "offline".into(),
+    if !std::path::Path::new(&row.storage_key).exists() {
+        store
+            .set_folder_status(row.folder_id, "offline")
+            .map_err(mode_err)?;
+        let _ = FolderStatusChangedEvent {
+            folder_id: i32::try_from(row.folder_id).unwrap_or(0),
+            status: "offline".into(),
+        }
+        .emit(&app);
+        return Ok(());
     }
-    .emit(&app);
+    let folder = store.get_folder(row.folder_id).map_err(mode_err)?;
+    if let Some(folder) = folder {
+        if !folder.path.is_empty() {
+            let _ = app
+                .asset_protocol_scope()
+                .allow_directory(std::path::PathBuf::from(&folder.path), true);
+        }
+        if folder.status != "online" {
+            store
+                .set_folder_status(row.folder_id, "online")
+                .map_err(mode_err)?;
+            let _ = FolderStatusChangedEvent {
+                folder_id: i32::try_from(row.folder_id).unwrap_or(0),
+                status: "online".into(),
+            }
+            .emit(&app);
+        }
+    }
     Ok(())
 }
 
