@@ -182,12 +182,16 @@ pub async fn search_assets(
     };
     // 每路保留 (asset_id, cosine)：两侧向量均 L2 归一化，cos = 1 − d²/2，clamp 到 [0,1]
     let mut semantic_streams: Vec<Vec<(u64, f64)>> = Vec::new();
+    let mut text_qvec: Option<Vec<f32>> = None; // 区域流复用同一查询向量（Chinese-CLIP 对齐空间）
     for ix in &indexers {
         let Ok(qvec) = ix.embed_text(trimmed) else {
             // 静默吞曾让"语义流故障"与"真无结果"不可区分（搜'花'返回空的无声根因之一）
             tracing::warn!(index_id = ix.index_id(), "查询文本编码失败，跳过该路语义流");
             continue;
         };
+        if text_qvec.is_none() {
+            text_qvec = Some(qvec.clone());
+        }
         // 单索引故障只降级该路语义流，不拖垮整个搜索（与 embed_text 失败 continue 同策）
         let hits = match store.knn_search(ix.index_id(), &qvec, knn_k) {
             Ok(h) => h,
@@ -214,6 +218,45 @@ pub async fn search_assets(
         .iter()
         .map(|v| v.iter().map(|p| p.0).collect())
         .collect();
+
+    // ---- 区域流（ADR-0015：区域级 MaxSim）----
+    // 查询向量与区域向量同在 Chinese-CLIP 对齐空间；每个资产取其区域最小距离，
+    // 等价于「查询 token × 图像区域集合」的 MaxSim。作为额外一路语义流参与 RRF。
+    let mut region_stream: Vec<(u64, f64)> = Vec::new();
+    if let Some(qv) = &text_qvec {
+        let fetch = knn_k.saturating_mul(3);
+        if let Ok(region_hits) = store.knn_regions(qv, fetch) {
+            use std::collections::HashMap as StdMap;
+            let mut best: StdMap<u64, f64> = StdMap::new();
+            for (_region_id, asset_id, dist) in region_hits {
+                let asset_u = u64::try_from(asset_id).unwrap_or(0);
+                let d = f64::from(dist);
+                let e = best.entry(asset_u).or_insert(f64::INFINITY);
+                if d < *e {
+                    *e = d;
+                }
+            }
+            let mut ranked: Vec<(u64, f64)> = best.into_iter().collect();
+            ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            region_stream = ranked
+                .into_iter()
+                .filter(|(id, _)| {
+                    store
+                        .get_asset(i64::try_from(*id).unwrap_or(0))
+                        .ok()
+                        .flatten()
+                        .map(|row| passes_filters(&row))
+                        .unwrap_or(false)
+                })
+                .collect();
+        }
+    }
+    let region_ids: Vec<u64> = region_stream.iter().map(|p| p.0).collect();
+
+    let semantic_id_lists: Vec<Vec<u64>> = semantic_streams
+        .iter()
+        .map(|v| v.iter().map(|p| p.0).collect())
+        .collect();
     let semantic_refs: Vec<&[u64]> = semantic_id_lists.iter().map(|v| v.as_slice()).collect();
     let similarity_of: std::collections::HashMap<u64, f64> = semantic_streams
         .iter()
@@ -236,7 +279,9 @@ pub async fn search_assets(
     };
 
     // ---- 多流 RRF 融合（k=60，白皮书 §4.6 + ADR-0013）----
-    let fused = mm_core::search::rrf_fuse_multi(&semantic_refs, &text_ids, 60.0);
+    let mut all_semantic_refs: Vec<&[u64]> = semantic_refs.clone();
+    all_semantic_refs.push(&region_ids);
+    let fused = mm_core::search::rrf_fuse_multi(&all_semantic_refs, &text_ids, 60.0);
     let max_score = fused.first().map(|h| h.score).unwrap_or(1.0).max(1e-9);
 
     let items = fused

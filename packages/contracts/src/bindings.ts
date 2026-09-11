@@ -88,6 +88,7 @@ export const events = {
 	modelDownloadProgressEvent: makeEvent<ModelDownloadProgressEvent>("model-download-progress-event"),
 	modelReadyEvent: makeEvent<ModelReadyEvent>("model-ready-event"),
 	modelsImportedEvent: makeEvent<ModelsImportedEvent>("models-imported-event"),
+	regionProgressEvent: makeEvent<RegionProgressEvent>("region-progress-event"),
 	runtimeDownloadFailedEvent: makeEvent<RuntimeDownloadFailedEvent>("runtime-download-failed-event"),
 	runtimeDownloadProgressEvent: makeEvent<RuntimeDownloadProgressEvent>("runtime-download-progress-event"),
 	runtimeReadyEvent: makeEvent<RuntimeReadyEvent>("runtime-ready-event"),
@@ -283,6 +284,12 @@ export type ModelStatus = {
 
 /**  模型本地导入完成且装配成功 */
 export type ModelsImportedEvent = Record<string, never>;
+
+/**  区域提取进度（ADR-0015；done/total = 区域行数口径） */
+export type RegionProgressEvent = {
+	done: number,
+	total: number,
+};
 
 /**
  *  运行时包下载/安装失败（终态）：前端据此清除「下载中」并展示原因，

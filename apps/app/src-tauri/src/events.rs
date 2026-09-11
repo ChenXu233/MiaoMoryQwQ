@@ -88,3 +88,10 @@ pub struct RuntimeDownloadFailedEvent {
 /// 模型本地导入完成且装配成功
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 pub struct ModelsImportedEvent {}
+
+/// 区域提取进度（ADR-0015；done/total = 区域行数口径）
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct RegionProgressEvent {
+    pub done: i32,
+    pub total: i32,
+}

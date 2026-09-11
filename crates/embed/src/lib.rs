@@ -11,6 +11,7 @@ pub mod download;
 pub mod manifest;
 pub mod preprocess;
 pub mod quantize;
+pub mod region;
 pub mod runtime;
 pub mod tokenizer;
 

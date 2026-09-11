@@ -10,6 +10,7 @@ mod events;
 mod folder_commands;
 mod folder_watcher;
 mod inference_commands;
+mod region_worker;
 mod search_commands;
 mod state;
 
@@ -21,7 +22,8 @@ use tauri_specta::{collect_commands, collect_events, Builder};
 use crate::events::{
     EmbedProgressEvent, FolderStatusChangedEvent, ImportFinishedEvent, ImportItemFailedEvent,
     ImportPausedEvent, ImportProgressEvent, ImportResumedEvent, ModelDownloadProgressEvent,
-    ModelReadyEvent, ModelsImportedEvent, RuntimeDownloadFailedEvent, RuntimeDownloadProgressEvent,
+    ModelReadyEvent, ModelsImportedEvent, RegionProgressEvent, RuntimeDownloadFailedEvent,
+    RuntimeDownloadProgressEvent,
     RuntimeReadyEvent,
 };
 use crate::state::AppState;
@@ -83,6 +85,7 @@ pub fn app_builder() -> Builder<Wry> {
             RuntimeReadyEvent,
             RuntimeDownloadFailedEvent,
             ModelsImportedEvent,
+            RegionProgressEvent,
         ])
 }
 
@@ -232,6 +235,13 @@ pub fn run() {
                 }
                 embed_worker::EmbedWorker::spawn(
                     state.workspace.db_path(),
+                    state.indexers.clone(),
+                    state.engine.clone(),
+                    app.handle().clone(),
+                );
+                region_worker::RegionWorker::spawn(
+                    state.workspace.db_path(),
+                    state.model_dir.clone(),
                     state.indexers.clone(),
                     state.engine.clone(),
                     app.handle().clone(),
