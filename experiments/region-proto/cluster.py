@@ -38,6 +38,7 @@ def main() -> None:
     data = np.load(args.npz, allow_pickle=False)
     vecs = data["vecs"].astype(np.float32)
     paths = data["paths"]
+    photo_idx = data["photo_idx"]
     boxes = data["boxes"]
     n = len(vecs)
     print(f"regions: {n}, dim: {vecs.shape[1]}")
@@ -49,14 +50,15 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 照片读盘缓存(每簇的 crop 可能散布在不同照片)
+    # 照片读盘缓存(cv2.imread 不支持中文路径,统一 fromfile+imdecode)
     cache: dict[str, np.ndarray] = {}
 
     def get_crop(p: str, x0: int, y0: int, x1: int, y1: int, size: int = 112) -> np.ndarray | None:
         if p not in cache:
             if len(cache) > 32:
                 cache.clear()
-            cache[p] = cv2.imread(p)
+            raw = np.fromfile(p, dtype=np.uint8)
+            cache[p] = cv2.imdecode(raw, cv2.IMREAD_COLOR) if raw.size else None
         img = cache[p]
         if img is None:
             return None
@@ -75,7 +77,7 @@ def main() -> None:
         picks = idx[: args.per_cluster]
         tiles = []
         for r in picks:
-            p = str(paths[r])
+            p = str(paths[photo_idx[r]])
             x0, y0, x1, y1 = (int(v) for v in boxes[r])
             tile = get_crop(p, x0, y0, x1, y1)
             if tile is not None:
@@ -95,7 +97,7 @@ def main() -> None:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
         cv2.imwrite(str(out_dir / f"cluster_{c:02d}.jpg"), grid, [cv2.IMWRITE_JPEG_QUALITY, 90])
         report["clusters"].append({"cluster": c, "size": int(len(idx)),
-                                   "sample_photo": str(paths[picks[0]])})
+                                   "sample_photo": str(paths[photo_idx[picks[0]]])})
 
     sizes = np.bincount(labels, minlength=args.k)
     report["size_stats"] = {
