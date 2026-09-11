@@ -46,22 +46,19 @@ pub struct SamSegmenter {
 
 impl SamSegmenter {
     pub fn load(encoder_path: &Path, decoder_path: &Path) -> Result<Self, ErrorCode> {
-        let read = |p: &Path| -> Result<Vec<u8>, ErrorCode> {
-            std::fs::read(p).map_err(|_| ErrorCode::ModelMissing)
-        };
+        // 必须走文件路径加载：导出的 ONNX 带 external data（.onnx.data），
+        // commit_from_memory 的内存 buffer 无法解析相对路径引用（静默失败的教训）。
         // 分割纯 CPU（轻量且避免占用推理 EP）
-        let encoder = Session::builder()
-            .map_err(|_| ErrorCode::ModelMissing)?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|_| ErrorCode::ModelMissing)?
-            .commit_from_memory(&read(encoder_path)?)
-            .map_err(|_| ErrorCode::ModelMissing)?;
-        let decoder = Session::builder()
-            .map_err(|_| ErrorCode::ModelMissing)?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|_| ErrorCode::ModelMissing)?
-            .commit_from_memory(&read(decoder_path)?)
-            .map_err(|_| ErrorCode::ModelMissing)?;
+        let build = |p: &Path| -> Result<Session, ErrorCode> {
+            Session::builder()
+                .map_err(|_| ErrorCode::ModelMissing)?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|_| ErrorCode::ModelMissing)?
+                .commit_from_file(p)
+                .map_err(|_| ErrorCode::ModelMissing)
+        };
+        let encoder = build(encoder_path)?;
+        let decoder = build(decoder_path)?;
         Ok(Self { encoder, decoder })
     }
 

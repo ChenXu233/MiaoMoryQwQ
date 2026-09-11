@@ -50,14 +50,33 @@ impl RegionWorker {
             .spawn(move || {
                 let enc_path = model_dir.join("sam").join("sam_encoder.onnx");
                 let dec_path = model_dir.join("sam").join("sam_decoder.onnx");
-                if !SamSegmenter::available(&enc_path, &dec_path) {
-                    tracing::warn!("SAM ONNX 模型缺失，区域索引禁用（model_dir/sam/）");
-                    return;
-                }
+                // 模型后到位可自动启用：每轮检查，仅首次缺失时告警
+                let mut missing_logged = false;
+                let mut segmenter: Option<SamSegmenter> = None;
                 let mut last_t: Option<i64> = None; // 上一张拍摄时间（时空调制）
                 loop {
                     std::thread::sleep(Duration::from_millis(2000));
+                    if segmenter.is_none() {
+                        if !SamSegmenter::available(&enc_path, &dec_path) {
+                            if !missing_logged {
+                                missing_logged = true;
+                                tracing::warn!("SAM ONNX 模型缺失，区域索引暂禁用（等待 model_dir/sam/ 出现后自动启用）");
+                            }
+                            continue;
+                        }
+                        match SamSegmenter::load(&enc_path, &dec_path) {
+                            Ok(s) => {
+                                tracing::info!("SAM 分割器加载成功，区域索引启用");
+                                segmenter = Some(s);
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = ?e, "SAM 分割器加载失败，下轮重试");
+                                continue;
+                            }
+                        }
+                    }
                     if engine.snapshot().running {
+                        tracing::info!("region tick: 引擎忙，让路");
                         continue;
                     }
                     let Ok(store) = Store::open(&db_path) else {
@@ -79,8 +98,11 @@ impl RegionWorker {
                             .unwrap_or(true)
                     };
                     if pending_emb {
+                        tracing::info!("region tick: 嵌入队列非空，让路");
                         continue;
                     }
+                    let regions_pending = store.count_ready_without_regions().unwrap_or(-1);
+                    tracing::info!(regions_pending, "region tick: 嵌入队列为空");
                     let clip = {
                         let loaded = indexers.read().unwrap();
                         loaded
@@ -89,9 +111,10 @@ impl RegionWorker {
                             .cloned()
                     };
                     let Some(clip) = clip else {
+                        tracing::info!("region tick: CLIP 索引器缺失，跳过");
                         continue; // 语义模型未装配（区域编码依赖其图像塔）
                     };
-                    let Ok(mut segmenter) = SamSegmenter::load(&enc_path, &dec_path) else {
+                    let Some(ref mut segmenter) = segmenter else {
                         continue;
                     };
                     let Ok(pending) = store.list_ready_without_regions(BATCH) else {
@@ -100,6 +123,7 @@ impl RegionWorker {
                     if pending.is_empty() {
                         continue;
                     }
+                    tracing::info!(count = pending.len(), "region tick: 开始本批区域提取");
                     for (asset_id, storage_key, taken_at) in pending {
                         // ---- 时空调制：篇章 + τ 调制（与上一张拍摄间隔）----
                         let dt_min = match (taken_at, last_t) {
@@ -145,6 +169,7 @@ impl RegionWorker {
                                 continue;
                             }
                         };
+                        tracing::info!(asset_id, "region: 分割开始");
                         let boxes = match segmenter
                             .segment(&photo.image.rgb, photo.image.width, photo.image.height)
                         {
@@ -190,6 +215,7 @@ impl RegionWorker {
                                 DecodedImage { width: bw as u32, height: bh as u32, rgb }
                             })
                             .collect();
+                        tracing::info!(asset_id, regions = boxes.len(), "region: 分割完成，开始编码");
                         let Ok(vecs) = clip.embed_images(&crops) else {
                             tracing::warn!(asset_id, "区域 CLIP 编码失败");
                             if taken_at.is_some() {

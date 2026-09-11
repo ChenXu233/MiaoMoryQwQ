@@ -128,6 +128,22 @@ pub fn run() {
             app.asset_protocol_scope()
                 .allow_directory(paths.workspace_dir.clone(), true)
                 .ok();
+            // 运行时放行的目录不跨重启（scope 每次启动重建）——重启后原图全部 403,
+            // 前端误报「源离线」把整个文件夹置 offline（一票否决缺陷的真正根因）。
+            // 启动时对所有已注册文件夹重新放行。
+            {
+                if let Ok(store) = mm_store::Store::open(&paths.db_path()) {
+                    if let Ok(folders) = store.list_folders() {
+                        for f in folders {
+                            if f.status == "online" && !f.path.is_empty() {
+                                let _ = app
+                                    .asset_protocol_scope()
+                                    .allow_directory(PathBuf::from(&f.path), true);
+                            }
+                        }
+                    }
+                }
+            }
 
             // 推理后端（spec 0008 / ADR-0014）：config.inference_ep → EpKind，
             // 进程最早处选定 onnxruntime 变体（一次性）；所选变体缺失/加载失败
