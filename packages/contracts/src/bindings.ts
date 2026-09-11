@@ -52,11 +52,19 @@ export const commands = {
 	/**  更改数据位置：校验可写与嵌套关系后写入 config.data_dir，重启生效（规格 0006 §3.2） */
 	setDataLocation: (dir: string) => typedError<null, string>(__TAURI_INVOKE("set_data_location", { dir })),
 	listFolders: () => typedError<FolderInfo[], string>(__TAURI_INVOKE("list_folders")),
-	/**  主动重检：路径存在 → online，不存在 → missing；广播状态变化 */
+	/**
+	 *  主动重检：路径存在 → online，不存在 → missing；广播状态变化。
+	 *  恢复 online 时补放行 asset scope：scope 每次启动重建，只翻 DB 状态不放行的话，
+	 *  原图继续 403 又被一票否决打回 offline——重检永远解不了套。
+	 */
 	recheckFolder: (folderId: number) => typedError<FolderInfo, string>(__TAURI_INVOKE("recheck_folder", { folderId })),
 	/**  重新指定丢失文件夹的新位置；该工作区资产的 storage_key 按新前缀批量改写 */
 	relocateFolder: (folderId: number, newPath: string) => typedError<FolderInfo, string>(__TAURI_INVOKE("relocate_folder", { folderId, newPath })),
-	/**  前端原图加载失败回调（被动检测）：该文件夹标记 offline 并广播（一次性提示由前端控制） */
+	/**
+	 *  前端原图加载失败回调（被动检测）：后端先核实该文件是否真的不在磁盘上。
+	 *  文件还在 = scope 丢失/瞬时错误（如 403），不打 offline——一票否决把整个
+	 *  文件夹误标 offline 的根因；改为补放行来源目录并把误标的 offline 拉回 online。
+	 */
 	reportOriginalMissing: (assetId: number) => typedError<null, string>(__TAURI_INVOKE("report_original_missing", { assetId })),
 	assetDetail: (assetId: number) => typedError<AssetDetail, string>(__TAURI_INVOKE("asset_detail", { assetId })),
 	storageUsage: () => typedError<StorageUsage, string>(__TAURI_INVOKE("storage_usage")),
