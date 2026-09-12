@@ -296,7 +296,8 @@ pub struct FolderDeleteReport {
 }
 
 /// 删除来源文件夹（工作区）：移除其全部记录、各索引向量、区域与缩略图，
-/// 磁盘原文件不受影响。导入/同步进行中拒绝（引擎同一时刻至多一个任务）。
+/// 磁盘原文件不受影响。导入/同步进行中拒绝；维护守卫与引擎任务启动互斥，
+/// 消除「检查与执行之间任务被启动」的竞态（watcher 侧 start 失败会去抖重试）。
 #[tauri::command]
 #[specta::specta]
 pub async fn delete_folder(
@@ -304,11 +305,14 @@ pub async fn delete_folder(
     state: State<'_, AppState>,
     folder_id: i32,
 ) -> Result<FolderDeleteReport, String> {
-    if state.engine.snapshot().running {
-        return Err("有导入或同步正在进行，等它结束再删除".into());
-    }
     let store = crate::commands::store_at(&state).map_err(mode_err)?;
     let fid = i64::from(folder_id);
+    // begin_maintenance 与 start 共用引擎状态锁，原子完成「无运行任务 + 拒新任务」；
+    // 守卫 drop 自动退出维护态（含 panic 路径），后段无 await 不放大 Send 约束
+    let _maintenance = state
+        .engine
+        .begin_maintenance()
+        .map_err(|_| "有导入或同步正在进行，等它结束再删除".to_string())?;
     let folder = store
         .get_folder(fid)
         .map_err(mode_err)?

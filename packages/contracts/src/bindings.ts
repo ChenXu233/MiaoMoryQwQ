@@ -62,7 +62,8 @@ export const commands = {
 	relocateFolder: (folderId: number, newPath: string) => typedError<FolderInfo, string>(__TAURI_INVOKE("relocate_folder", { folderId, newPath })),
 	/**
 	 *  删除来源文件夹（工作区）：移除其全部记录、各索引向量、区域与缩略图，
-	 *  磁盘原文件不受影响。导入/同步进行中拒绝（引擎同一时刻至多一个任务）。
+	 *  磁盘原文件不受影响。导入/同步进行中拒绝；维护守卫与引擎任务启动互斥，
+	 *  消除「检查与执行之间任务被启动」的竞态（watcher 侧 start 失败会去抖重试）。
 	 */
 	deleteFolder: (folderId: number) => typedError<FolderDeleteReport, string>(__TAURI_INVOKE("delete_folder", { folderId })),
 	/**

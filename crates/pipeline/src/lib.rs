@@ -99,6 +99,9 @@ struct JobRuntime {
 #[derive(Default)]
 struct EngineState {
     job: Option<JobRuntime>,
+    /// 维护态（删除工作区等结构性变更）：true 时 start 拒绝新任务，
+    /// 消除「命令层检查 running 与执行之间任务被启动」的 TOCTOU 窗口
+    maintenance: bool,
 }
 
 /// 导入引擎：同一时刻至多一个任务（`ImportBusy`）
@@ -114,6 +117,19 @@ pub struct ImportEngine {
     io_abort: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// 维护守卫：持有期间 `ImportEngine::start` 拒绝新任务（返回 `ImportBusy`），
+/// 不影响已运行任务（begin 时已断言无任务）。drop 自动退出维护态。
+pub struct MaintenanceGuard<'a> {
+    engine: &'a ImportEngine,
+}
+
+impl Drop for MaintenanceGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.engine.state.lock().unwrap();
+        state.maintenance = false;
+    }
+}
+
 impl ImportEngine {
     pub fn new(
         db_path: PathBuf,
@@ -123,7 +139,10 @@ impl ImportEngine {
         config: ImportConfig,
     ) -> Self {
         Self {
-            state: Mutex::new(EngineState { job: None }),
+            state: Mutex::new(EngineState {
+                job: None,
+                maintenance: false,
+            }),
             db_path,
             thumbs_dir,
             sink,
@@ -134,13 +153,25 @@ impl ImportEngine {
         }
     }
 
-    /// 启动导入；已有任务在跑时返回 `ImportBusy`。folder_id = 来源工作区（迁移 v4）
+    /// 进入维护态：与 start 共用同一把状态锁，原子完成「无运行任务 + 拒绝新任务」
+    /// 双检（删除工作区等结构性变更的互斥原语）。已有任务在跑或已在维护态时返回
+    /// `ImportBusy`；drop 返回的守卫即退出维护态。
+    pub fn begin_maintenance(&self) -> Result<MaintenanceGuard<'_>, ErrorCode> {
+        let mut state = self.state.lock().unwrap();
+        if state.maintenance || state.job.as_ref().is_some_and(|j| !j.finished) {
+            return Err(ErrorCode::ImportBusy);
+        }
+        state.maintenance = true;
+        Ok(MaintenanceGuard { engine: self })
+    }
+
+    /// 启动导入；已有任务在跑或处于维护态时返回 `ImportBusy`。folder_id = 来源工作区（迁移 v4）
     pub fn start(self: &Arc<Self>, folder: PathBuf, folder_id: i64) -> Result<u64, ErrorCode> {
         if !folder.is_dir() {
             return Err(ErrorCode::ReadFailed);
         }
         let mut state = self.state.lock().unwrap();
-        if state.job.as_ref().is_some_and(|j| !j.finished) {
+        if state.maintenance || state.job.as_ref().is_some_and(|j| !j.finished) {
             return Err(ErrorCode::ImportBusy);
         }
         let job_id = self.next_job_id.fetch_add(1, Ordering::SeqCst);
@@ -899,6 +930,42 @@ mod tests {
         assert_eq!(eta_seconds(10, 5, 25), Some(40));
         assert_eq!(eta_seconds(10, 0, 25), None);
         assert_eq!(eta_seconds(10, 25, 25), None);
+    }
+
+    #[test]
+    fn maintenance_blocks_start_until_guard_drop() {
+        // 删除工作区与引擎任务的互斥：维护态拒新任务；守卫 drop 恢复；
+        // 已结束的任务残留不阻塞维护态（与 start 的判定一致，只看未结束任务）
+        let (_dir, src, ws) = temp_workspace("maint");
+        write_test_png(&src.join("a.png"), [1, 2, 3]);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let engine = engine_in(
+            &ws,
+            Arc::new(FakeSink(Arc::clone(&events))),
+            ImportConfig::default(),
+        );
+
+        {
+            let guard = engine.begin_maintenance().unwrap();
+            assert!(
+                matches!(engine.start(src.clone(), 1), Err(ErrorCode::ImportBusy)),
+                "维护态下 start 必须拒绝"
+            );
+            assert!(
+                matches!(engine.begin_maintenance(), Err(ErrorCode::ImportBusy)),
+                "重复进入维护态必须拒绝"
+            );
+            drop(guard);
+        }
+        engine.start(src.clone(), 1).unwrap();
+        assert!(wait_finished(&engine, Duration::from_secs(15)));
+        // 守卫可再次获取（finished 任务不算占用），且再次挡住 start
+        let guard = engine.begin_maintenance().unwrap();
+        assert!(matches!(
+            engine.start(src.clone(), 1),
+            Err(ErrorCode::ImportBusy)
+        ));
+        drop(guard);
     }
 
     #[test]

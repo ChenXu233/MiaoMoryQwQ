@@ -1259,13 +1259,15 @@ impl Store {
     /// 缩略图引用计数），再删文件夹行本身。永不触碰磁盘原文件。
     /// 返回（删除资产数、引用归零的 thumb_key——调用方据此删缩略图文件）。
     /// 事务化：资产级联与文件夹行删除原子生效，中途失败整体回滚（不留半删状态）。
+    /// 资产收集在事务内进行——BEGIN IMMEDIATE 持写锁期间无并发写，事务开始后
+    /// 才落进本文件夹的资产不会被漏删成孤儿。
     pub fn delete_folder(&self, folder_id: i64) -> Result<(usize, Vec<String>)> {
-        let ids: Vec<i64> = self
-            .conn
-            .prepare("SELECT asset_id FROM assets WHERE folder_id = ?1")?
-            .query_map(params![folder_id], |r| r.get(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
         self.with_tx(|| {
+            let ids: Vec<i64> = self
+                .conn
+                .prepare("SELECT asset_id FROM assets WHERE folder_id = ?1")?
+                .query_map(params![folder_id], |r| r.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             let (deleted, _, thumb_keys) = self.delete_assets_inner(&ids)?;
             self.conn.execute(
                 "DELETE FROM folders WHERE folder_id = ?1",
