@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "miaomory-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mm-core",
  "mm-embed",
@@ -2745,7 +2745,7 @@ dependencies = [
 
 [[package]]
 name = "mm-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2754,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "mm-embed"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "image",
@@ -2774,7 +2774,7 @@ dependencies = [
 
 [[package]]
 name = "mm-pipeline"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "image",
@@ -2796,7 +2796,7 @@ dependencies = [
 
 [[package]]
 name = "mm-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs",
  "serde",
@@ -2809,7 +2809,7 @@ dependencies = [
 
 [[package]]
 name = "mm-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mm-core",
  "rusqlite",

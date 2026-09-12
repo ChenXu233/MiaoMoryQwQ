@@ -1,7 +1,7 @@
 {
   "name": "@miaomory/contracts",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "tauri-specta 生成的 IPC 契约（Rust 为唯一事实源，禁止手改）",
   "main": "./src/bindings.ts",
