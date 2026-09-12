@@ -88,6 +88,17 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # WiX light.exe 的 MSI ICE 校验依赖 VBSCRIPT；runner 镜像 2026-09 起默认移除（tauri#13752）
+      - name: Enable VBSCRIPT for WiX (windows leg)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $cap = Get-WindowsCapability -Online -Name 'VBSCRIPT*'
+          if (($cap | Where-Object State -eq 'Installed').Count -eq 0) {
+            DISM /Online /Add-Capability /CapabilityName:VBSCRIPT~~~~0.0.1.0 /norestart
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { exit $LASTEXITCODE }
+          } else { Write-Host "VBSCRIPT already installed, skip" }
+
       - name: 安装 Linux 系统依赖（tauri + libde265）
         if: runner.os == 'Linux'
         run: |
