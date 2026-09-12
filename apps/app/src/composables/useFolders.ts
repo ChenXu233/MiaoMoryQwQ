@@ -31,5 +31,11 @@ export function useFolders() {
     void load();
     return res.status === "ok" ? res.data : res.error;
   }
-  return { folders, foldersReady, load, recheck, relocate };
+  /** 删除工作区（记录/向量/缩略图，原文件不动）；成功返回删除的记录数，失败返回错误文案 */
+  async function remove(folderId: number): Promise<number | string> {
+    const res = await commands.deleteFolder(folderId);
+    void load();
+    return res.status === "ok" ? res.data.deleted : res.error;
+  }
+  return { folders, foldersReady, load, recheck, relocate, remove };
 }

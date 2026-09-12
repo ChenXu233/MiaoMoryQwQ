@@ -61,6 +61,11 @@ export const commands = {
 	/**  重新指定丢失文件夹的新位置；该工作区资产的 storage_key 按新前缀批量改写 */
 	relocateFolder: (folderId: number, newPath: string) => typedError<FolderInfo, string>(__TAURI_INVOKE("relocate_folder", { folderId, newPath })),
 	/**
+	 *  删除来源文件夹（工作区）：移除其全部记录、各索引向量、区域与缩略图，
+	 *  磁盘原文件不受影响。导入/同步进行中拒绝（引擎同一时刻至多一个任务）。
+	 */
+	deleteFolder: (folderId: number) => typedError<FolderDeleteReport, string>(__TAURI_INVOKE("delete_folder", { folderId })),
+	/**
 	 *  前端原图加载失败回调（被动检测）：后端先核实该文件是否真的不在磁盘上。
 	 *  文件还在 = scope 丢失/瞬时错误（如 403），不打 offline——一票否决把整个
 	 *  文件夹误标 offline 的根因；改为补放行来源目录并把误标的 offline 拉回 online。
@@ -174,6 +179,12 @@ export type FailedItem = {
 	asset_id: number,
 	path: string,
 	error_code: string | null,
+};
+
+/**  删除工作区的结果报告 */
+export type FolderDeleteReport = {
+	/**  随文件夹删除的资产（记录）数 */
+	deleted: number,
 };
 
 /**  单工作区的向量化进度（进度卡按工作区分组展示） */

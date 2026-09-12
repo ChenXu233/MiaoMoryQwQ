@@ -1,6 +1,7 @@
 //! 来源文件夹（工作区）与存储占用命令（ADR-0011/0012 方向，P5 切片 A1）。
 //! 离线为一等状态：浏览/搜索永不受阻，只有原图访问降级（缩略图 + 状态条）。
 
+use mm_core::StorageAdapter as _;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event;
@@ -284,6 +285,53 @@ pub fn storage_usage(state: State<'_, AppState>) -> Result<StorageUsage, String>
             .map(|i| i.count)
             .sum::<i32>(),
         per_index,
+    })
+}
+
+/// 删除工作区的结果报告
+#[derive(Debug, Clone, Serialize, specta::Type)]
+pub struct FolderDeleteReport {
+    /// 随文件夹删除的资产（记录）数
+    pub deleted: i32,
+}
+
+/// 删除来源文件夹（工作区）：移除其全部记录、各索引向量、区域与缩略图，
+/// 磁盘原文件不受影响。导入/同步进行中拒绝（引擎同一时刻至多一个任务）。
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    folder_id: i32,
+) -> Result<FolderDeleteReport, String> {
+    if state.engine.snapshot().running {
+        return Err("有导入或同步正在进行，等它结束再删除".into());
+    }
+    let store = crate::commands::store_at(&state).map_err(mode_err)?;
+    let fid = i64::from(folder_id);
+    let folder = store
+        .get_folder(fid)
+        .map_err(mode_err)?
+        .ok_or("folder not found")?;
+    let (deleted, thumb_keys) = store.delete_folder(fid).map_err(mode_err)?;
+    let storage = mm_pipeline::LocalDiskAdapter::new(state.workspace.thumbs_dir());
+    for key in &thumb_keys {
+        let _ = storage.delete(key);
+    }
+    tracing::info!(
+        folder_id,
+        path = %folder.path,
+        deleted,
+        thumbs = thumb_keys.len(),
+        "已删除来源工作区"
+    );
+    let _ = FolderStatusChangedEvent {
+        folder_id,
+        status: "deleted".into(),
+    }
+    .emit(&app);
+    Ok(FolderDeleteReport {
+        deleted: i32::try_from(deleted).unwrap_or(0),
     })
 }
 

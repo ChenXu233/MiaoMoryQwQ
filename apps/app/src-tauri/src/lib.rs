@@ -61,6 +61,7 @@ pub fn app_builder() -> Builder<Wry> {
             folder_commands::list_folders,
             folder_commands::recheck_folder,
             folder_commands::relocate_folder,
+            folder_commands::delete_folder,
             folder_commands::report_original_missing,
             folder_commands::asset_detail,
             folder_commands::storage_usage,

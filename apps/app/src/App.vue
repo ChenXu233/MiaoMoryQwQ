@@ -10,6 +10,7 @@ import { useModelStatus } from "./composables/useModelStatus";
 import { useEmbedJob } from "./composables/useEmbedJob";
 import { useConfirm } from "./composables/useConfirm";
 import { useContextMenu } from "./composables/useContextMenu";
+import { useWorkspaceSelection } from "./composables/useWorkspaceSelection";
 import TitleBar from "./components/shell/TitleBar.vue";
 import UiConfirm from "./components/shell/UiConfirm.vue";
 import UiContextMenu from "./components/shell/UiContextMenu.vue";
@@ -30,6 +31,7 @@ useModelStatus(); // 单例：启动即检查模型并自动下载（规格 0004
 const { refresh: refreshEmbed } = useEmbedJob();
 const { confirm } = useConfirm();
 const { openFor: openContextMenu, close: closeContextMenu } = useContextMenu();
+const { selectedFolderId, selectFolder } = useWorkspaceSelection();
 const toastMsg = ref<string | null>(null);
 let toastTimer: number | undefined;
 const rail = ref(false); // 侧边栏收起态（body.rail，2026-09-09 所有者裁定）
@@ -89,6 +91,25 @@ async function recheckFolderById(folderId: number, label: string) {
   );
 }
 
+async function deleteFolderById(folderId: number, label: string) {
+  const ok = await confirm({
+    title: `删除工作区「${label}」？`,
+    message:
+      "将移除这个工作区的全部记录、向量和缩略图，搜索结果里不再出现；磁盘上的原文件不会被改动。此操作不可撤销。",
+    okLabel: "删除",
+    danger: true,
+  });
+  if (!ok) return;
+  const res = await commands.deleteFolder(folderId);
+  if (res.status === "ok") {
+    if (selectedFolderId.value === String(folderId)) selectFolder(""); // 回到全部照片
+    window.dispatchEvent(new CustomEvent("mm-library-changed"));
+    toast(`已删除「${label}」（${res.data.deleted} 条记录）`);
+  } else {
+    toast(`删除失败：${res.error}`);
+  }
+}
+
 /** 右键拦截：输入区放行原生（复制/粘贴）；照片/工作区给上下文动作；其余一律屏蔽原生菜单 */
 function onContextMenu(e: MouseEvent) {
   const el = e.target as HTMLElement;
@@ -113,6 +134,7 @@ function onContextMenu(e: MouseEvent) {
       openContextMenu(e, [
         { label: "重新向量化", action: () => void reembedFolder(fid, label) },
         { label: "重新检查", action: () => void recheckFolderById(fid, label) },
+        { label: "删除工作区", danger: true, action: () => void deleteFolderById(fid, label) },
       ]);
       return;
     }

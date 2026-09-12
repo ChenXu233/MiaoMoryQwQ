@@ -608,8 +608,17 @@ impl Store {
         Ok(format!("{q}{escaped}{q}"))
     }
 
-    /// 写入/覆盖嵌入（vec0 无原地更新，走整行替换）；f32 按 blob 绑定
+    /// 写入/覆盖嵌入（vec0 无原地更新，走整行替换）；f32 按 blob 绑定。
+    /// 资产在推理期间被删除（删除工作区竞态）时静默跳过，不写孤儿向量。
     pub fn insert_embedding(&self, index_id: i64, asset_id: i64, embedding: &[f32]) -> Result<()> {
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM assets WHERE asset_id = ?1)",
+            params![asset_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(());
+        }
         let table = self.vec_table(index_id)?;
         self.conn.execute(
             &format!("DELETE FROM {table} WHERE asset_id = ?1"),
@@ -758,7 +767,8 @@ impl Store {
             .query_row("SELECT COUNT(*) FROM regions", [], |r| r.get(0))?)
     }
 
-    /// 写入一个区域（元数据 + 向量）。返回全局 region_id。
+    /// 写入一个区域（元数据 + 向量）。返回全局 region_id；
+    /// 资产在提取期间被删除（删除工作区竞态，单张提取可达 30s）时返回 None。
     pub fn insert_region(
         &self,
         asset_id: i64,
@@ -768,11 +778,19 @@ impl Store {
         chapter_id: i64,
         cluster_id: i64,
         embedding: &[f32],
-    ) -> Result<i64> {
+    ) -> Result<Option<i64>> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM assets WHERE asset_id = ?1)",
+            params![asset_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
         self.conn.execute(
             "INSERT INTO regions (asset_id, region_idx, bbox_x0, bbox_y0, bbox_x1, bbox_y1,
                                   area_frac, cluster_id, chapter_id, created_at)
@@ -788,7 +806,7 @@ impl Store {
             "INSERT INTO vec_regions (region_id, embedding) VALUES (?1, ?2)",
             params![region_id, blob],
         )?;
-        Ok(region_id)
+        Ok(Some(region_id))
     }
 
     /// 区域 KNN：返回 (region_id, asset_id, distance)
@@ -1034,6 +1052,14 @@ impl Store {
         let Some(blob) = blob else {
             return Ok(false);
         };
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM assets WHERE asset_id = ?1)",
+            params![to_asset_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(false);
+        }
         self.conn.execute(
             &format!("DELETE FROM {table} WHERE asset_id = ?1"),
             params![to_asset_id],
@@ -1178,6 +1204,21 @@ impl Store {
         Ok(rewritten)
     }
 
+    /// 删除整个来源文件夹（工作区）：级联其全部资产（各索引向量/区域/FTS/
+    /// 缩略图引用计数），再删文件夹行本身。永不触碰磁盘原文件。
+    /// 返回（删除资产数、引用归零的 thumb_key——调用方据此删缩略图文件）。
+    pub fn delete_folder(&self, folder_id: i64) -> Result<(usize, Vec<String>)> {
+        let ids: Vec<i64> = self
+            .conn
+            .prepare("SELECT asset_id FROM assets WHERE folder_id = ?1")?
+            .query_map(params![folder_id], |r| r.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let (deleted, _, thumb_keys) = self.delete_assets(&ids)?;
+        self.conn
+            .execute("DELETE FROM folders WHERE folder_id = ?1", params![folder_id])?;
+        Ok((deleted, thumb_keys))
+    }
+
     // ---- 文本检索（P3；迁移 v3 起）----
 
     /// 写入/覆盖资产的文本索引（content = 文件名等）
@@ -1276,6 +1317,84 @@ fn year_of(taken_at: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn region_roundtrip_and_knn() {
+        // 生产同路径验证：insert_region 写入 → 读回 blob 非零 → knn_regions 命中自身
+        let store = Store::open_memory().unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO folders (folder_id, path, label, channel, status, added_at)
+                 VALUES (10, 'X:/p', NULL, 'local', 'online', 0)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO assets (asset_id, folder_id, sha256, storage_key, kind, year, status, imported_at)
+                 VALUES (42, 10, 'sha-region-0', 'p/b.jpg', 'photo', '2024', 'ready', 0)",
+                [],
+            )
+            .unwrap();
+        let v = vec![0.5f32; 512]; // 归一化后 norm=1 的常数方向
+        let rid = store
+            .insert_region(42, 0, (1, 2, 30, 40), 0.5, 0, 3, &v)
+            .unwrap()
+            .expect("资产存在时必写入");
+        assert!(rid > 0);
+        // 资产不存在（删除工作区竞态）→ 守卫生效不写入
+        assert!(store
+            .insert_region(9999, 0, (1, 2, 30, 40), 0.5, 0, 3, &v)
+            .unwrap()
+            .is_none());
+        let meta = store
+            .conn
+            .query_row(
+                "SELECT asset_id, region_idx, cluster_id FROM regions WHERE region_id = ?1",
+                params![rid],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+            )
+            .unwrap();
+        assert_eq!(meta, (42, 0, 3));
+        let hits = store.knn_regions(&v, 5).unwrap();
+        assert!(!hits.is_empty(), "KNN 应回自身");
+        let (hit_rid, hit_asset, dist) = hits[0];
+        assert_eq!(hit_rid, rid);
+        assert_eq!(hit_asset, 42);
+        assert!(dist < 0.001, "自查询距离应≈0，实际 {dist}");
+        // 衰退合并删除
+        store.delete_region_cluster(3).unwrap();
+    }
+
+    #[test]
+    fn region_pending_and_sentinel() {
+        let store = Store::open_memory().unwrap();
+        // 准备一个 online 文件夹 + ready 照片
+        store
+            .conn
+            .execute(
+                "INSERT INTO folders (folder_id, path, label, channel, status, added_at)
+                 VALUES (10, 'X:/p', NULL, 'local', 'online', 0)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO assets (asset_id, folder_id, sha256, storage_key, kind, year, status, imported_at)
+                 VALUES (7, 10, 'sha-region-1', 'p/a.jpg', 'photo', '2024', 'ready', 0)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(store.count_ready_without_regions().unwrap(), 1);
+        // sentinel:region_idx=-1 视为已处理
+        store
+            .insert_region(7, -1, (0, 0, 0, 0), 0.0, 0, -1, &[0.0; 512])
+            .unwrap();
+        assert_eq!(store.count_ready_without_regions().unwrap(), 0);
+    }
 
     fn new_asset(sha: &str, taken_at: i64) -> NewAsset {
         NewAsset {
@@ -1765,5 +1884,44 @@ mod tests {
         // 删最后一条：引用归零，key 交出
         let (_, _, keys) = store.delete_assets(&[id2]).unwrap();
         assert_eq!(keys, vec!["ab/share.jpg".to_string()]);
+    }
+
+    #[test]
+    fn delete_folder_cascades_assets_and_folder_row() {
+        let store = Store::open_memory().unwrap();
+        store.register_index("m", "模型", "m", 8, 1).unwrap();
+        let (fa, _) = store.get_or_create_folder("D:/gone", None, 1).unwrap();
+        let (fb, _) = store.get_or_create_folder("D:/keep", None, 2).unwrap();
+        let id1 = make_ready_in(&store, fa, "sha-g", 1_700_000_000);
+        let mut n = new_asset("sha-g", 1_700_000_000);
+        n.folder_id = fb;
+        n.storage_key = "D:/keep/g.jpg".into();
+        let id2 = store.insert_pending(&n).unwrap().asset_id;
+        store
+            .mark_ready(id2, 1, 1, 1_700_000_000, "image/jpeg", None, "k2")
+            .unwrap();
+        // 独占缩略图 + 跨区共享缩略图各验证一遍：ready 时 thumb_key 同为 make_ready_in 给的 "k"
+        store.insert_embedding(1, id1, &[0.5f32; 512]).unwrap();
+        let chapter = store.new_region_chapter(1_700_000_000).unwrap();
+        store
+            .insert_region(id1, 0, (0, 0, 10, 10), 0.5, chapter, -1, &[0.5f32; 512])
+            .unwrap()
+            .unwrap();
+
+        let (deleted, thumb_keys) = store.delete_folder(fa).unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(thumb_keys, vec!["k".to_string()], "独占缩略图引用归零交出");
+        assert!(store.get_asset(id1).unwrap().is_none(), "资产随文件夹删除");
+        assert!(store.get_folder(fa).unwrap().is_none(), "文件夹行本身删除");
+        assert_eq!(store.count_embedded(1).unwrap(), 0, "向量级联删除");
+        assert_eq!(store.count_regions().unwrap(), 0, "区域级联删除");
+        assert_eq!(
+            store.get_asset(id2).unwrap().map(|a| a.thumb_key),
+            Some(Some("k2".into())),
+            "其他工作区不受影响"
+        );
+        assert!(store.get_folder(fb).unwrap().is_some());
+        // 重复删除幂等
+        assert_eq!(store.delete_folder(fa).unwrap(), (0, vec![]));
     }
 }

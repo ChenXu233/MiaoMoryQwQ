@@ -96,7 +96,7 @@ function collapse() {
         <button
           class="folder-item"
           :class="{ on: selectedFolderId === String(f.folder_id) }"
-          :title="f.status !== 'online' ? `文件夹${f.status === 'offline' ? '离线' : '路径丢失'}：${f.path}（右键可重新向量化/重新检查）` : `${f.path}（右键可重新向量化/重新检查）`"
+          :title="f.status !== 'online' ? `文件夹${f.status === 'offline' ? '离线' : '路径丢失'}：${f.path}（右键可重新向量化/重新检查/删除）` : `${f.path}（右键可重新向量化/重新检查/删除）`"
           @click="pickFolder(String(f.folder_id))"
         >
           <span

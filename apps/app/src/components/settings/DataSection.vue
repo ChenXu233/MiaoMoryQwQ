@@ -6,11 +6,13 @@ import { commands, type DataInfo, type FailedItem, type StorageUsage } from "@mi
 import { useFolders } from "../../composables/useFolders";
 import { useEmbedJob } from "../../composables/useEmbedJob";
 import { useConfirm } from "../../composables/useConfirm";
+import { useWorkspaceSelection } from "../../composables/useWorkspaceSelection";
 import { formatBytes } from "../../lib/format";
 
-const { folders, foldersReady, recheck, relocate } = useFolders();
+const { folders, foldersReady, recheck, relocate, remove } = useFolders();
 const { refresh: refreshEmbed } = useEmbedJob();
 const { confirm } = useConfirm();
+const { selectedFolderId, selectFolder } = useWorkspaceSelection();
 
 const info = ref<DataInfo | null>(null);
 const usage = ref<StorageUsage | null>(null);
@@ -100,6 +102,27 @@ async function reembedFolder(folderId: number, label: string) {
     folderNotice.value = `已开始重建（${res.data} 张），进度见右下角索引卡。`;
   } else {
     folderError.value = res.error;
+  }
+}
+
+// 删除工作区（记录/向量/缩略图一起移除，原文件不动；不可撤销所以确认文案说清后果）
+async function deleteFolder(folderId: number, label: string) {
+  folderError.value = null;
+  const ok = await confirm({
+    title: `删除工作区「${label}」？`,
+    message:
+      "将移除这个工作区的全部记录、向量和缩略图，搜索结果里不再出现；磁盘上的原文件不会被改动。此操作不可撤销。",
+    okLabel: "删除",
+    danger: true,
+  });
+  if (!ok) return;
+  const res = await remove(folderId);
+  if (typeof res === "number") {
+    if (selectedFolderId.value === String(folderId)) selectFolder(""); // 库页回到全部照片
+    window.dispatchEvent(new CustomEvent("mm-library-changed"));
+    folderNotice.value = `已删除「${label}」（${res} 条记录）。`;
+  } else {
+    folderError.value = res;
   }
 }
 
@@ -221,6 +244,14 @@ onMounted(() => void loadStatic());
           @click="reembedFolder(f.folder_id, f.label || f.path)"
         >
           重建向量
+        </button>
+        <button
+          class="btn-glass btn-danger"
+          style="padding: 5px 12px; font-size: 12px"
+          title="移除这个工作区的全部记录（原文件不受影响）"
+          @click="deleteFolder(f.folder_id, f.label || f.path)"
+        >
+          删除
         </button>
       </div>
     </div>
