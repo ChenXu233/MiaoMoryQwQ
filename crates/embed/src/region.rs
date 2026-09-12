@@ -10,11 +10,9 @@ use std::path::Path;
 
 use image::RgbImage;
 use mm_core::ErrorCode;
-use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
+use ort::session::Session;
 use ort::value::Tensor;
-
-use crate::EpKind;
 
 /// SAM 预处理（Meta 官方约定：0-255 域减均值除标准差，不除 255）
 const PIX_MEAN: [f32; 3] = [123.675, 116.28, 103.53];
@@ -74,11 +72,13 @@ impl SamSegmenter {
         height: u32,
     ) -> Result<Vec<RegionBox>, ErrorCode> {
         // 预处理：1024² + SAM 归一化（RGB）
-        let img = RgbImage::from_raw(width, height, rgb.to_vec())
-            .ok_or(ErrorCode::DecodeFailed)?;
-        let resized =
-            image::imageops::resize(&img, SAM_INPUT as u32, SAM_INPUT as u32,
-                                    image::imageops::FilterType::Triangle);
+        let img = RgbImage::from_raw(width, height, rgb.to_vec()).ok_or(ErrorCode::DecodeFailed)?;
+        let resized = image::imageops::resize(
+            &img,
+            SAM_INPUT as u32,
+            SAM_INPUT as u32,
+            image::imageops::FilterType::Triangle,
+        );
         let mut input = vec![0f32; SAM_INPUT * SAM_INPUT * 3];
         for (i, px) in resized.pixels().enumerate() {
             let [r, g, b] = px.0;
@@ -86,27 +86,32 @@ impl SamSegmenter {
             input[i * 3 + 1] = (g as f32 - PIX_MEAN[1]) / PIX_STD[1];
             input[i * 3 + 2] = (b as f32 - PIX_MEAN[2]) / PIX_STD[2];
         }
-        let tensor = Tensor::from_array((
-            [1i64, 3i64, SAM_INPUT as i64, SAM_INPUT as i64],
-            input,
-        ))
-        .map_err(|e| { tracing::error!(error = ?e, "SAM tensor 构造失败"); ErrorCode::DecodeFailed })?;
+        let tensor = Tensor::from_array(([1i64, 3i64, SAM_INPUT as i64, SAM_INPUT as i64], input))
+            .map_err(|e| {
+                tracing::error!(error = ?e, "SAM tensor 构造失败");
+                ErrorCode::DecodeFailed
+            })?;
         let embedding = {
-            let outs = self.encoder.run(ort::inputs! {"images" => tensor}).map_err(|e| {
-                tracing::error!(step = "encoder run", error = %e, "SAM ONNX 失败");
-                ErrorCode::SearchUnavailable
-            })?;
-            let (_, data) = outs["embeddings"].try_extract_tensor::<f32>().map_err(|e| {
-                tracing::error!(step = "encoder 输出提取", error = %e, "SAM ONNX 失败");
-                ErrorCode::SearchUnavailable
-            })?;
+            let outs = self
+                .encoder
+                .run(ort::inputs! {"images" => tensor})
+                .map_err(|e| {
+                    tracing::error!(step = "encoder run", error = %e, "SAM ONNX 失败");
+                    ErrorCode::SearchUnavailable
+                })?;
+            let (_, data) = outs["embeddings"]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| {
+                    tracing::error!(step = "encoder 输出提取", error = %e, "SAM ONNX 失败");
+                    ErrorCode::SearchUnavailable
+                })?;
             data.to_vec()
         };
 
         // 16 批错位网格点 → 每批 4 个候选 mask（256² logits）
         let mut candidates: Vec<(Vec<u8>, f32)> = Vec::new(); // (0/1 位图, score)
         for g in 0..GROUPS {
-            let offset = ((g as f32 * 37.7) % 96.0) as f32;
+            let offset = (g as f32 * 37.7) % 96.0;
             let mut pts = Vec::with_capacity(GRID * GRID * 2);
             let mut labels = Vec::with_capacity(GRID * GRID);
             for j in 0..GRID {
@@ -121,35 +126,42 @@ impl SamSegmenter {
                 }
             }
             let t_emb = Tensor::from_array((
-                [1i64, 256i64, (SAM_INPUT / 16) as i64, (SAM_INPUT / 16) as i64],
+                [
+                    1i64,
+                    256i64,
+                    (SAM_INPUT / 16) as i64,
+                    (SAM_INPUT / 16) as i64,
+                ],
                 embedding.clone(),
             ))
             .map_err(|_| ErrorCode::SearchUnavailable)?;
-            let t_pc = Tensor::from_array((
-                [1i64, (GRID * GRID) as i64, 2i64],
-                pts,
+            let t_pc = Tensor::from_array(([1i64, (GRID * GRID) as i64, 2i64], pts))
+                .map_err(|_| ErrorCode::SearchUnavailable)?;
+            let t_pl = Tensor::from_array(([1i64, (GRID * GRID) as i64], labels))
+                .map_err(|_| ErrorCode::SearchUnavailable)?;
+            let t_mi = Tensor::from_array((
+                [1i64, 1i64, MASK_SIZE as i64, MASK_SIZE as i64],
+                vec![0f32; MASK_SIZE * MASK_SIZE],
             ))
             .map_err(|_| ErrorCode::SearchUnavailable)?;
-            let t_pl =
-                Tensor::from_array(([1i64, (GRID * GRID) as i64], labels))
-                    .map_err(|_| ErrorCode::SearchUnavailable)?;
-            let t_mi = Tensor::from_array(([1i64, 1i64, MASK_SIZE as i64, MASK_SIZE as i64],
-                                           vec![0f32; MASK_SIZE * MASK_SIZE]))
+            let t_hm = Tensor::from_array(([1i64], vec![0f32]))
                 .map_err(|_| ErrorCode::SearchUnavailable)?;
-            let t_hm = Tensor::from_array(([1i64], vec![0f32])).map_err(|_| ErrorCode::SearchUnavailable)?;
             let t_os = Tensor::from_array(([2i64], vec![MASK_SIZE as f32, MASK_SIZE as f32]))
                 .map_err(|_| ErrorCode::SearchUnavailable)?;
-            let outs = self.decoder.run(ort::inputs! {
-                "image_embeddings" => t_emb,
-                "point_coords" => t_pc,
-                "point_labels" => t_pl,
-                "mask_input" => t_mi,
-                "has_mask_input" => t_hm,
-                "orig_im_size" => t_os,
-            }).map_err(|e| {
-                tracing::error!(step = "decoder run", error = %e, "SAM ONNX 失败");
-                ErrorCode::SearchUnavailable
-            })?;
+            let outs = self
+                .decoder
+                .run(ort::inputs! {
+                    "image_embeddings" => t_emb,
+                    "point_coords" => t_pc,
+                    "point_labels" => t_pl,
+                    "mask_input" => t_mi,
+                    "has_mask_input" => t_hm,
+                    "orig_im_size" => t_os,
+                })
+                .map_err(|e| {
+                    tracing::error!(step = "decoder run", error = %e, "SAM ONNX 失败");
+                    ErrorCode::SearchUnavailable
+                })?;
             let (_, mdata) = outs["masks"].try_extract_tensor::<f32>().map_err(|e| {
                 tracing::error!(step = "decoder masks 提取", error = %e, "SAM ONNX 失败");
                 ErrorCode::SearchUnavailable
@@ -223,7 +235,13 @@ impl SamSegmenter {
             if dup {
                 continue;
             }
-            boxes.push(RegionBox { x0: rx0, y0: ry0, x1: rx1, y1: ry1, area_frac: frac });
+            boxes.push(RegionBox {
+                x0: rx0,
+                y0: ry0,
+                x1: rx1,
+                y1: ry1,
+                area_frac: frac,
+            });
         }
         Ok(boxes)
     }

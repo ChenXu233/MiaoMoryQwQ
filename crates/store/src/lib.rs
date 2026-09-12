@@ -731,7 +731,10 @@ impl Store {
 
     /// 待提取区域的 ready 照片：无区域记录且文件夹在线；按 taken_at 排序
     /// （时空调制需要时间序，连拍相邻）。返回 (asset_id, storage_key, taken_at)。
-    pub fn list_ready_without_regions(&self, limit: u32) -> Result<Vec<(i64, String, Option<i64>)>> {
+    pub fn list_ready_without_regions(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<(i64, String, Option<i64>)>> {
         let rows = self
             .conn
             .prepare(
@@ -742,9 +745,7 @@ impl Store {
                    AND NOT EXISTS (SELECT 1 FROM regions WHERE asset_id = a.asset_id)
                  ORDER BY a.taken_at, a.asset_id LIMIT ?1",
             )?
-            .query_map(params![limit], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })?
+            .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -771,6 +772,7 @@ impl Store {
 
     /// 写入一个区域（元数据 + 向量）。返回全局 region_id；
     /// 资产在提取期间被删除（删除工作区竞态，单张提取可达 30s）时返回 None。
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_region(
         &self,
         asset_id: i64,
@@ -797,8 +799,10 @@ impl Store {
             "INSERT INTO regions (asset_id, region_idx, bbox_x0, bbox_y0, bbox_x1, bbox_y1,
                                   area_frac, cluster_id, chapter_id, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![asset_id, region_idx, bbox.0, bbox.1, bbox.2, bbox.3,
-                    area_frac, cluster_id, chapter_id, now],
+            params![
+                asset_id, region_idx, bbox.0, bbox.1, bbox.2, bbox.3, area_frac, cluster_id,
+                chapter_id, now
+            ],
         )?;
         let region_id = self.conn.last_insert_rowid();
         let blob: &[u8] = unsafe {
@@ -814,9 +818,8 @@ impl Store {
     /// 区域 KNN：返回 (region_id, asset_id, distance)
     pub fn knn_regions(&self, query: &[f32], k: u32) -> Result<Vec<(i64, i64, f32)>> {
         let k = k.clamp(1, 4096);
-        let blob: &[u8] = unsafe {
-            std::slice::from_raw_parts(query.as_ptr().cast::<u8>(), query.len() * 4)
-        };
+        let blob: &[u8] =
+            unsafe { std::slice::from_raw_parts(query.as_ptr().cast::<u8>(), query.len() * 4) };
         let rows = self
             .conn
             .prepare(
@@ -892,9 +895,8 @@ impl Store {
     }
 
     /// 列出全部原型（index_id=2 区域簇；在线 DP-means 编排用）
-    pub fn list_region_clusters(
-        &self,
-    ) -> Result<Vec<(i64, i64, Vec<f32>, i64)>> {
+    #[allow(clippy::type_complexity)]
+    pub fn list_region_clusters(&self) -> Result<Vec<(i64, i64, Vec<f32>, i64)>> {
         let rows = self
             .conn
             .prepare(
@@ -1216,8 +1218,10 @@ impl Store {
             .query_map(params![folder_id], |r| r.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let (deleted, _, thumb_keys) = self.delete_assets(&ids)?;
-        self.conn
-            .execute("DELETE FROM folders WHERE folder_id = ?1", params![folder_id])?;
+        self.conn.execute(
+            "DELETE FROM folders WHERE folder_id = ?1",
+            params![folder_id],
+        )?;
         Ok((deleted, thumb_keys))
     }
 
@@ -1356,7 +1360,13 @@ mod tests {
             .query_row(
                 "SELECT asset_id, region_idx, cluster_id FROM regions WHERE region_id = ?1",
                 params![rid],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                },
             )
             .unwrap();
         assert_eq!(meta, (42, 0, 3));

@@ -214,11 +214,6 @@ pub async fn search_assets(
             .collect();
         semantic_streams.push(pairs);
     }
-    let semantic_id_lists: Vec<Vec<u64>> = semantic_streams
-        .iter()
-        .map(|v| v.iter().map(|p| p.0).collect())
-        .collect();
-
     // ---- 区域流（ADR-0015：区域级 MaxSim）----
     // 查询向量与区域向量同在 Chinese-CLIP 对齐空间；每个资产取其区域最小距离，
     // 等价于「查询 token × 图像区域集合」的 MaxSim。作为额外一路语义流参与 RRF。
@@ -315,12 +310,12 @@ pub async fn search_assets(
                     width: row.width,
                     height: row.height,
                     taken_at: row.taken_at as f64,
-                // 纯文本流命中 = 语义索引尚未建立（网格呼吸点语义一致）
-                indexed: hit.matched.slug() != "text",
-            },
-            score: (hit.score / max_score * 1000.0).round() / 1000.0,
-            // 语义相似度（余弦 0~1；纯文件名命中为 null）——展示用，不参与排序
-            similarity: similarity_of.get(&hit.asset_id).copied(),
+                    // 纯文本流命中 = 语义索引尚未建立（网格呼吸点语义一致）
+                    indexed: hit.matched.slug() != "text",
+                },
+                score: (hit.score / max_score * 1000.0).round() / 1000.0,
+                // 语义相似度（余弦 0~1；纯文件名命中为 null）——展示用，不参与排序
+                similarity: similarity_of.get(&hit.asset_id).copied(),
                 matched: hit.matched.slug().to_string(),
                 file_name,
                 size_bytes: row.size.map(|s| s as f64).unwrap_or(0.0),

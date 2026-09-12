@@ -23,8 +23,7 @@ use crate::events::{
     EmbedProgressEvent, FolderStatusChangedEvent, ImportFinishedEvent, ImportItemFailedEvent,
     ImportPausedEvent, ImportProgressEvent, ImportResumedEvent, ModelDownloadProgressEvent,
     ModelReadyEvent, ModelsImportedEvent, RegionProgressEvent, RuntimeDownloadFailedEvent,
-    RuntimeDownloadProgressEvent,
-    RuntimeReadyEvent,
+    RuntimeDownloadProgressEvent, RuntimeReadyEvent,
 };
 use crate::state::AppState;
 

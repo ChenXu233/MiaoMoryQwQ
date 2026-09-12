@@ -19,6 +19,8 @@ use tauri_specta::Event;
 use crate::events::RegionProgressEvent;
 
 /// 区域簇所属的逻辑索引（独立于 index_meta 的整图索引；ADR-0015 §6）
+/// store 的 region_clusters SQL 同样硬编码 2，两者必须同步修改
+#[allow(dead_code)]
 pub const REGION_INDEX_ID: i64 = 2;
 /// 篇章切分：与上一张拍摄间隔超过该天数 → 完全新增原型集（所有者 2×2 矩阵）
 const CHAPTER_GAP_DAYS: i64 = 30;
@@ -84,7 +86,7 @@ impl RegionWorker {
                     };
                     // 嵌入优先：任何整图索引有待嵌入时让路
                     let pending_emb = {
-                        let loaded = indexers.read().unwrap();
+                        let _loaded = indexers.read().unwrap();
                         store
                             .list_active_indexes()
                             .map(|idxs| {
@@ -237,7 +239,7 @@ impl RegionWorker {
                             let v = &vecs[idx];
                             let proto_refs: Vec<mm_embed::region::DpProto> =
                                 protos.iter().map(|(_, p)| p.clone()).collect();
-                            let (cid, count) = match dp_assign(v, &proto_refs, tau_eff) {
+                            let (cid, _count) = match dp_assign(v, &proto_refs, tau_eff) {
                                 mm_embed::region::DpOutcome::Matched(i) => {
                                     let (cid, proto) = protos[i].clone();
                                     let drifted = dp_drift(&proto.vec, v, proto.count);
@@ -250,7 +252,7 @@ impl RegionWorker {
                                     (cid, proto.count + 1)
                                 }
                                 mm_embed::region::DpOutcome::New => {
-                                    store.upsert_region_cluster(next_id, chapter_id, v, 1);
+                                    let _ = store.upsert_region_cluster(next_id, chapter_id, v, 1);
                                     protos.push((
                                         next_id,
                                         mm_embed::region::DpProto { vec: v.clone(), count: 1 },
