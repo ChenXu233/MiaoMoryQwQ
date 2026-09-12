@@ -209,6 +209,13 @@ onMounted(() => void loadStatic());
         <div class="set-d">文件夹不在线时，照片仍可浏览和搜索（用缩略图），只是看不到原图。</div>
       </div>
     </div>
+    <!-- 操作反馈放在行列表上方：行多时列表下方在屏外，错误会被当成「点了没用」 -->
+    <p v-if="folderNotice" role="status" class="set-d" style="color: var(--mm-success); margin-top: 8px">
+      {{ folderNotice }}
+    </p>
+    <p v-if="folderError" role="alert" class="set-d" style="color: var(--mm-danger); margin-top: 8px">
+      {{ folderError }}
+    </p>
     <div v-if="folders.length" class="path-rows">
       <div v-for="f in folders" :key="f.folder_id" class="prow">
         <span
@@ -257,12 +264,6 @@ onMounted(() => void loadStatic());
     </div>
     <p v-else-if="!foldersReady" class="set-d loading-hint" style="margin-top: 10px">读取中…</p>
     <p v-else class="set-d" style="margin-top: 10px">还没有导入过文件夹。</p>
-    <p v-if="folderNotice" role="status" class="set-d" style="color: var(--mm-success); margin-top: 8px">
-      {{ folderNotice }}
-    </p>
-    <p v-if="folderError" role="alert" class="set-d" style="color: var(--mm-danger); margin-top: 8px">
-      {{ folderError }}
-    </p>
   </div>
 
   <!-- 存储占用（裁定 25：只分析不清理） -->

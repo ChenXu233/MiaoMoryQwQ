@@ -251,6 +251,8 @@ impl Store {
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // 各线程各自开连（worker/命令层），写并发客观存在；BUSY 等待而非立刻报错
+        conn.pragma_update(None, "busy_timeout", 5_000)?;
         let store = Self { conn };
         store.migrate()?;
         Ok(store)
