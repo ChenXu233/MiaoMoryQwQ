@@ -1,0 +1,29 @@
+name: vbscript-probe
+
+on:
+  workflow_dispatch:
+
+# 一次性诊断：验证 windows runner 上 DISM 安装 VBSCRIPT 能力是否可行
+# （WiX light.exe 的 MSI ICE 校验依赖；runner 镜像切换后默认缺失，tauri#13752）
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - name: 检查 VBSCRIPT 当前状态
+        shell: powershell
+        run: Get-WindowsCapability -Online -Name 'VBSCRIPT*' | Format-List Name, State
+
+      - name: DISM 安装 VBSCRIPT
+        shell: powershell
+        run: |
+          $cap = Get-WindowsCapability -Online -Name 'VBSCRIPT*'
+          if (($cap | Where-Object State -eq 'Installed').Count -eq 0) {
+            DISM /Online /Add-Capability /CapabilityName:VBSCRIPT~~~~0.0.1.0 /norestart
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { exit $LASTEXITCODE }
+          } else { Write-Host "VBSCRIPT 已启用，跳过" }
+
+      - name: VBSCRIPT 冒烟（cscript 执行 vbs）
+        shell: cmd
+        run: |
+          echo WScript.Echo "vbscript-ok" > "%TEMP%\probe.vbs"
+          cscript //nologo "%TEMP%\probe.vbs"
