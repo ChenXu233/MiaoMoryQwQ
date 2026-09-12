@@ -73,7 +73,10 @@ if (-not $src) {
     }
     $out = "$zip.out"
     Expand-Archive -Path $zip -DestinationPath $out -Force
-    $src = Join-Path $out "onnxruntime.dll"
+    # 官方 zip 带一层版本目录且 dll 在 lib\ 下，递归定位以兼容布局变化
+    $src = (Get-ChildItem -Path $out -Recurse -Filter "onnxruntime.dll" |
+        Select-Object -First 1).FullName
+    if (-not $src) { throw "解压产物中未找到 onnxruntime.dll：$out" }
     $srcKind = "官方 CPU 变体顶位（DirectML 将降级 CPU，设置页可见原因）"
 }
 
