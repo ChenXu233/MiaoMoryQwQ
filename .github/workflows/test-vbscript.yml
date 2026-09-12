@@ -3,28 +3,13 @@ name: wix-probe
 on:
   workflow_dispatch:
 
-# one-shot diagnostic: full windows tauri build with -vv so tauri-bundler's output_ok
-# logs light.exe stdout/stderr at debug level (the real LGHT error is invisible at info)
+# 32-bit VBScript COM check: WiX light.exe is x86 and hosts the script engine in-proc
+# for MSI ICE validation. cscript (64-bit) passing does not prove SysWOW64 works.
 jobs:
   probe:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Enable VBSCRIPT
+      - name: install VBSCRIPT
         shell: powershell
         run: |
           $cap = Get-WindowsCapability -Online -Name 'VBSCRIPT*'
@@ -33,34 +18,29 @@ jobs:
             if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { exit $LASTEXITCODE }
           }
 
-      - name: Install libheif (vcpkg)
-        shell: pwsh
+      - name: 64-bit cscript smoke
+        shell: cmd
         run: |
-          New-Item -ItemType Directory -Force -Path "C:\vcpkg-binary-cache" | Out-Null
-          "VCPKG_DEFAULT_BINARY_CACHE=C:\vcpkg-binary-cache" | Out-File -FilePath $env:GITHUB_ENV -Append
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "libheif:x64-windows"
-          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "VCPKGRS_TRIPLET=x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "VCPKGRS_DYNAMIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo WScript.Echo "vbs64-ok" > "%TEMP%\probe.vbs"
+          cscript //nologo "%TEMP%\probe.vbs"
 
-      - name: Cache vcpkg artifacts
-        uses: actions/cache@v4
-        with:
-          path: C:\vcpkg-binary-cache
-          key: vcpkg-libheif-x64-windows-1.23
+      - name: 32-bit cscript smoke (SysWOW64)
+        shell: cmd
+        run: |
+          echo WScript.Echo "vbs32-ok" > "%TEMP%\probe.vbs"
+          C:\Windows\SysWOW64\cscript.exe //nologo "%TEMP%\probe.vbs"
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: release-probe
-
-      - name: Install deps
-        run: pnpm install --frozen-lockfile
-
-      - name: Prepare runtime
-        shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File scripts/prepare-bundle-runtime.ps1
-
-      # -vv: tauri-bundler logs light stdout/stderr at debug level
-      - name: tauri build -vv (msi only)
-        run: pnpm --filter miaomory-app exec tauri build -vv --bundles msi
+      - name: COM registration state of vbscript both bitness
+        shell: powershell
+        run: |
+          foreach ($f in @('C:\Windows\System32\vbscript.dll', 'C:\Windows\SysWOW64\vbscript.dll')) {
+            if (Test-Path $f) {
+              Write-Host "$f exists, size=$((Get-Item $f).Length)"
+            } else {
+              Write-Host "$f MISSING"
+            }
+          }
+          # VBScript.RegExp ProgId resolution per view
+          foreach ($reg in @('HKLM:\SOFTWARE\Classes\VBScript.RegExp', 'HKLM:\SOFTWARE\WOW6432Node\Classes\VBScript.RegExp')) {
+            Write-Host "$reg present: $(Test-Path $reg)"
+          }
