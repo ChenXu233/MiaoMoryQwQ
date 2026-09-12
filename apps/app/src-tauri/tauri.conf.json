@@ -41,7 +41,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/ChenXu233/MiaoMoryQwQ/releases/latest/download/latest.json"
+        "https://raw.githubusercontent.com/ChenXu233/MiaoMoryQwQ/updater/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM5NjdCNTI0MTI5QjY0QUUKUldTdVpKc1NKTFZuT1hzOXVRUldOWVl0SkEzQzY2YmcrR3g4Q1hVbnRrUXh0eTVaQi92TGV3Y3oK"
     }

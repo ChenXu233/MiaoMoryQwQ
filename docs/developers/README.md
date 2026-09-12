@@ -15,7 +15,7 @@
 | `02-workflow.md` | 垂直切片工作流与 DoD | 现行 |
 | `03-ipc-contracts.md` | specta 契约生成与变更流程 | 现行 |
 | `04-testing.md` | 测试策略与手工验证清单约定 | 现行 |
-| `05-release.md` | 构建/签名/自动更新器 | 现行（更新器端到端待 P3） |
+| `05-release.md` | 发布流程（打 tag 即发版：版本注入/git-cliff notes/三平台签名发布/更新器自管端点） | 现行 |
 | `06-import-and-indexing.md` | 导入与索引技术解耦现状（线程模型/隐私边界/已知缺陷 D1~D8） | 现行（含待裁决缺陷清单） |
 
 ## 环境速览（白皮书附录 A）

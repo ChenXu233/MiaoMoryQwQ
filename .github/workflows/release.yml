@@ -4,9 +4,17 @@ on:
   push:
     tags: ["v*"]
 
-# alpha 发布：三平台构建 + 签名 + latest.json（tauri-action 合并各平台更新条目）
+# 连续推多个 tag 时排队执行，避免发布与回写交错
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# 打 tag 即发版：CI 注入版本号（tag 是唯一手动输入）、git-cliff 生成发布说明、
+# 三平台构建签名发布 Pre-release；finalize 把版本号回写 main、重生成 CHANGELOG.md、
+# 并将合并后的 latest.json 推到 updater 分支（更新器自管端点，绕开 GitHub /latest
+# 不指向 Pre-release 的限制）。
 jobs:
-  release:
+  build:
     strategy:
       fail-fast: false
       matrix:
@@ -15,7 +23,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      # git-cliff 需要完整历史与 tag
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 校验 tag 格式并提取版本号
+        shell: bash
+        run: |
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-.+)?$ ]]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 不符合 v<主>.<次>.<修订>(-后缀) 格式"
+            exit 1
+          fi
+          echo "APP_VERSION=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -71,6 +91,24 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
+      # 仓库内版本文件保持纯数字（MSI 约束），此处以 tag 基础版本覆盖工作区，回写由 finalize 负责
+      - name: 注入版本号（仅本次构建工作区）
+        run: node scripts/set-version.mjs "${{ env.APP_VERSION }}"
+
+      - name: 安装 git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: 生成发布说明（自上个 v* tag 以来的变更）
+        shell: bash
+        run: |
+          {
+            echo "RELEASE_NOTES<<GITCLIFF_EOF"
+            git-cliff --config scripts/cliff.toml --latest --strip header
+            echo "GITCLIFF_EOF"
+          } >> "$GITHUB_ENV"
+
       # 安装包须随附 onnxruntime 变体（CPU/DirectML），缺失则启动语义降级（ADR-0014）
       - name: 准备打包运行时（runtime/dml）
         if: runner.os == 'Windows'
@@ -86,7 +124,82 @@ jobs:
           projectPath: apps/app
           tagName: ${{ github.ref_name }}
           releaseName: "MiaoMory ${{ github.ref_name }}"
-          releaseBody: "MiaoMory alpha。Windows 安装包经更新器签名；macOS 为未签名包（右键打开绕过 Gatekeeper）。"
+          releaseBody: ${{ env.RELEASE_NOTES }}
           releaseDraft: false
           prerelease: true
-          includeUpdaterJson: true
+          uploadUpdaterJson: true
+
+  finalize:
+    name: 收尾（CHANGELOG / 版本回写 / 更新器 JSON）
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 校验 tag 格式并提取版本号
+        shell: bash
+        run: |
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-.+)?$ ]]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 不符合 v<主>.<次>.<修订>(-后缀) 格式"
+            exit 1
+          fi
+          echo "APP_VERSION=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # set-version.mjs 需 cargo 同步 Cargo.lock（runner 镜像虽自带 Rust，仍显式固定）
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      # 基于 origin/main 回写：若 tag 后 main 又前进，重生成时会把新提交归入「未发布」节
+      - name: 切到最新 main
+        run: |
+          git fetch origin main
+          git checkout -B release-write origin/main
+
+      - name: 注入版本号
+        run: node scripts/set-version.mjs "${{ env.APP_VERSION }}"
+
+      - name: 重生成 CHANGELOG.md
+        run: git-cliff --config scripts/cliff.toml -o CHANGELOG.md
+
+      # GITHUB_TOKEN 的推送不触发 ci.yml（GitHub 规则），不会造成循环
+      - name: 版本回写提交到 main
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md Cargo.toml Cargo.lock apps/app/package.json apps/app/src-tauri/tauri.conf.json packages/contracts/package.json
+          if git diff --cached --quiet; then
+            echo "版本文件无变化（重复发版或已回写），跳过提交"
+            exit 0
+          fi
+          git commit -m "chore(release): ${GITHUB_REF_NAME} 版本回写与更新日志"
+          git push origin HEAD:main
+
+      # 更新器自管端点：updater 分支只承载 latest.json，每次发布整体替换
+      - name: latest.json 发布到 updater 分支
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${GITHUB_REF_NAME}" --pattern latest.json --dir /tmp
+          cat /tmp/latest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan updater-publish
+          git rm -rf --quiet .
+          mv /tmp/latest.json latest.json
+          git add latest.json
+          git commit -m "chore(updater): latest.json → ${GITHUB_REF_NAME}"
+          git push --force origin HEAD:updater

@@ -1,0 +1,48 @@
+# git-cliff 配置：发布说明与 CHANGELOG.md 生成
+# 生成命令（release.yml 同款）：
+#   发布说明：git-cliff --config scripts/cliff.toml --latest --strip header
+#   CHANGELOG：git-cliff --config scripts/cliff.toml -o CHANGELOG.md
+
+[changelog]
+header = """
+# 更新日志
+
+由 CI 依据 conventional commits 自动生成，每次发布全量重写，请勿手改。
+
+"""
+body = """
+{% if version %}## {{ version }}（{{ timestamp | date(format="%Y-%m-%d") }}）{% else %}## 未发布{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+
+{% for commit in commits %}- {% if commit.scope %}**{{ commit.scope }}**：{% endif %}{{ commit.message | split(pat="\n") | first | upper_first }}
+{% endfor %}{% endfor %}
+"""
+trim = true
+# 打 tag 时刻无未发布提交，跳过空节
+skip_empty_releases = true
+
+[git]
+conventional_commits = true
+# 非规范提交（merge 等）直接过滤
+filter_unconventional = true
+split_commits = false
+filter_commits = true
+# 正则（非 glob）：只认 v<数字> 版本 tag，排除模型资产（models-v1）等非发布 tag
+tag_pattern = '^v[0-9]+\.[0-9]+\.[0-9]+(-.*)?$'
+sort_commits = "oldest"
+commit_parsers = [
+  { message = "^feat", group = "✨ 新增" },
+  { message = "^fix", group = "🐛 修复" },
+  { message = "^perf", group = "⚡ 性能" },
+  { message = "^refactor", group = "♻️ 重构" },
+  { message = "^exp", group = "🧪 实验" },
+  { message = "^doc", group = "📝 文档" },
+  { message = "^test", group = "✅ 测试" },
+  { message = "^style", group = "🎨 样式" },
+  # CI 版本回写提交不进日志
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore", group = "🔧 杂项" },
+  { message = "^ci", group = "🔧 杂项" },
+  { message = ".*", group = "其他" },
+]
