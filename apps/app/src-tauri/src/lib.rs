@@ -159,11 +159,15 @@ pub fn run() {
             // 回退自带 DML 变体并记入降级（config 不改写，修复环境重启即生效）
             let (ep, runtime_degraded, runtime_missing) = {
                 let cfg_value = paths.inference_ep.as_deref().unwrap_or("cpu");
+                // 三者仅在下方 #[cfg(windows)] 块中被改写，非 Windows 编译时按未用 mut 放行
+                #[cfg_attr(not(windows), allow(unused_mut))]
                 let mut parsed = mm_embed::EpKind::parse(cfg_value).unwrap_or_else(|| {
                     tracing::warn!(value = cfg_value, "inference_ep 配置值无效，按 CPU 处理");
                     mm_embed::EpKind::Cpu
                 });
+                #[cfg_attr(not(windows), allow(unused_mut))]
                 let mut degraded: Option<String> = None;
+                #[cfg_attr(not(windows), allow(unused_mut))]
                 let mut missing: Option<String> = None;
                 #[cfg(windows)]
                 {
