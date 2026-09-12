@@ -1,0 +1,78 @@
+name: wix-probe
+
+on:
+  workflow_dispatch:
+
+# one-shot diagnostic: does WiX light.exe work at all on the current windows-2025-vs2026 image?
+# captures light/candle stdout+stderr directly (tauri-bundler swallows them on failure)
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - name: install VBSCRIPT
+        shell: powershell
+        run: |
+          $cap = Get-WindowsCapability -Online -Name 'VBSCRIPT*'
+          if (($cap | Where-Object State -eq 'Installed').Count -eq 0) {
+            DISM /Online /Add-Capability /CapabilityName:VBSCRIPT~~~~0.0.1.0 /norestart
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { exit $LASTEXITCODE }
+          }
+
+      - name: download WiX 3.14
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip' -OutFile "$env:TEMP\wix.zip"
+          Expand-Archive -Path "$env:TEMP\wix.zip" -DestinationPath "$env:TEMP\wix" -Force
+
+      - name: PE machine type of light/candle
+        shell: pwsh
+        run: |
+          foreach ($exe in @('light.exe','candle.exe')) {
+            $p = "$env:TEMP\wix\$exe"
+            $fs = [System.IO.File]::OpenRead($p)
+            $br = New-Object System.IO.BinaryReader($fs)
+            $fs.Seek(0x3C, 'Begin') | Out-Null
+            $peOff = $br.ReadInt32()
+            $fs.Seek($peOff + 4, 'Begin') | Out-Null
+            $machine = $br.ReadUInt16()
+            $arch = if ($machine -eq 0x8664) { 'x64' } elseif ($machine -eq 0x14C) { 'x86' } else { $machine.ToString('X') }
+            Write-Host "$exe machine=$arch"
+            $fs.Close()
+          }
+
+      - name: minimal candle + light (tauri-like args)
+        shell: pwsh
+        run: |
+          $wx = "$env:TEMP\wix"
+          $wxsContent = @"
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Probe" Language="1033" Version="0.1.1" Manufacturer="Probe" UpgradeCode="12345678-1234-1234-1234-123456789012">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade DowngradeErrorMessage="no" />
+    <MediaTemplate EmbedCab="yes" />
+    <Feature Id="ProductFeature" Title="Probe" Level="1">
+      <ComponentGroupRef Id="P" />
+    </Feature>
+  </Product>
+  <Fragment>
+    <ComponentGroup Id="P">
+      <Component Directory="APPLICATIONFOLDER" Id="C1" Guid="*">
+        <File Id="F1" Source="$env:TEMP\wix\candle.exe" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>
+"@
+          $wxs = "$env:TEMP\probe.wxs"
+          [System.IO.File]::WriteAllText($wxs, $wxsContent)
+          & "$wx\candle.exe" -nologo -arch x64 "$wxs" -out "$env:TEMP\probe.wixobj" 2>&1 | ForEach-Object { "candle: $_" }
+          Write-Host "candle exit: $LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $wxl = "$env:TEMP\locale.wxl"
+          [System.IO.File]::WriteAllText($wxl, "<?xml version=`"1.0`" encoding=`"utf-8`"?><WixLocalization Culture=`"en-us`" xmlns=`"http://schemas.microsoft.com/wix/2006/localization`" />")
+          & "$wx\light.exe" -ext "$wx\WixUIExtension.dll" -ext "$wx\WixUtilExtension.dll" -cultures:en-us -loc "$wxl" "$env:TEMP\probe.wixobj" -out "$env:TEMP\probe.msi" 2>&1 | ForEach-Object { "light: $_" }
+          Write-Host "light exit: $LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "MSI built OK"
