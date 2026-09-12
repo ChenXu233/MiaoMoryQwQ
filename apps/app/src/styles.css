@@ -172,7 +172,6 @@ body {
   top: 0;
   bottom: 0;
   width: var(--mm-sidebar-w);
-  padding-top: var(--mm-tb-h);
   z-index: 30;
   display: flex;
   flex-direction: column;
@@ -180,7 +179,8 @@ body {
   backdrop-filter: blur(var(--mm-blur)) saturate(1.35);
   -webkit-backdrop-filter: blur(var(--mm-blur)) saturate(1.35);
   border-right: 1px solid var(--mm-glass-line);
-  padding: 12px 10px;
+  /* 顶部让出自绘标题栏（shorthand 会覆盖 padding-top,故并入简写） */
+  padding: var(--mm-tb-h) 10px 12px;
   gap: 2px;
   transition:
     transform 0.26s ease,
@@ -320,6 +320,10 @@ body.rail .frame {
 body.rail .frame > .page {
   padding-left: 58px;
 }
+/* 收起态：搜索浮层随内容区重新居中（原锚点含侧栏宽度） */
+body.rail .search-float {
+  left: 50vw;
+}
 .rail-fab {
   position: fixed;
   left: 14px;
@@ -416,7 +420,8 @@ body.rail .frame > .page {
 }
 .year-head {
   position: sticky;
-  top: 70px;
+  /* 吸附在搜索浮层（top: tb-h+8, 高 42）下方 10px */
+  top: calc(var(--mm-tb-h) + 60px);
   z-index: 10;
   display: flex;
   align-items: baseline;
@@ -707,7 +712,8 @@ body.rail .frame > .page {
 }
 .search-float {
   position: fixed;
-  top: 14px;
+  /* 顶部让出自绘标题栏，否则输入框上半截被拖动区吞掉点击 */
+  top: calc(var(--mm-tb-h) + 8px);
   z-index: 45;
   left: calc(var(--mm-sidebar-w) + (100vw - var(--mm-sidebar-w)) / 2);
   transform: translateX(-50%);
@@ -1265,7 +1271,8 @@ body.drawer .scrim {
 }
 .notice {
   position: fixed;
-  top: calc(var(--mm-tb-h) + 8px);
+  /* 顶部对齐搜索浮层会与其右端重叠，落到其下方 */
+  top: calc(var(--mm-tb-h) + 60px);
   right: 16px;
   z-index: 48;
   max-width: 380px;
@@ -1340,7 +1347,7 @@ body.drawer .scrim {
     display: none;
   }
   .year-head {
-    top: 66px;
+    top: calc(var(--mm-tb-h) + 60px);
   }
   .float-stack {
     left: 12px;

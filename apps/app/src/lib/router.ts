@@ -6,6 +6,8 @@ const ROUTES: readonly Route[] = ["home", "library", "settings"];
 
 function parse(): Route {
   const h = location.hash.replace(/^#\/?/, "");
+  // 设置页分区深链（#settings/index 等，SettingsPage 一次性解析）同样落到 settings 路由
+  if (h === "settings" || h.startsWith("settings/")) return "settings";
   return (ROUTES as readonly string[]).includes(h) ? (h as Route) : "library";
 }
 
