@@ -12,9 +12,10 @@ const pos = ref<{ x: number; y: number } | null>(null);
 const items = ref<ContextItem[]>([]);
 let onDocClick: ((e: MouseEvent) => void) | null = null;
 let onScroll: (() => void) | null = null;
+let onBlur: (() => void) | null = null;
 
 export function useContextMenu() {
-  /** 在鼠标位置显示菜单;同时挂全局关闭器（外点/滚动即关） */
+  /** 在鼠标位置显示菜单;同时挂全局关闭器（外点/滚动/失焦即关） */
   function openFor(e: MouseEvent, list: ContextItem[]) {
     close();
     items.value = list;
@@ -29,8 +30,10 @@ export function useContextMenu() {
       close();
     };
     onScroll = () => close();
+    onBlur = () => close();
     window.addEventListener("click", onDocClick, { capture: true });
     window.addEventListener("scroll", onScroll, { capture: true });
+    window.addEventListener("blur", onBlur);
   }
   function close() {
     pos.value = null;
@@ -42,6 +45,10 @@ export function useContextMenu() {
     if (onScroll) {
       window.removeEventListener("scroll", onScroll, { capture: true } as EventListenerOptions);
       onScroll = null;
+    }
+    if (onBlur) {
+      window.removeEventListener("blur", onBlur);
+      onBlur = null;
     }
   }
   return { pos, items, openFor, close };

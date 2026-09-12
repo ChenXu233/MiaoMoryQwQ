@@ -219,7 +219,13 @@ impl RegionWorker {
                             .collect();
                         tracing::info!(asset_id, regions = boxes.len(), "region: 分割完成，开始编码");
                         let Ok(vecs) = clip.embed_images(&crops) else {
-                            tracing::warn!(asset_id, "区域 CLIP 编码失败");
+                            // 与解码/分割失败同策：写 sentinel 防队首死循环
+                            // （该资产按 taken_at 稳定排序，不标记则每 2s 重烧全管线）
+                            tracing::warn!(asset_id, "区域 CLIP 编码失败，记 sentinel");
+                            let _ = store.insert_region(
+                                asset_id, -1, (0, 0, 0, 0), 0.0, chapter_id, -1,
+                                &[0.0; 512],
+                            );
                             if taken_at.is_some() {
                                 last_t = taken_at;
                             }
@@ -227,14 +233,16 @@ impl RegionWorker {
                         };
 
                         // ---- 在线 DP-means 准入（原型从 DB 装载，时空调制 τ）----
-                        let mut protos: Vec<(i64, mm_embed::region::DpProto)> = store
-                            .list_region_clusters()
-                            .unwrap_or_default()
+                        let all_clusters = store.list_region_clusters().unwrap_or_default();
+                        // next_id 必须全局起算：只看当前章节的 max 会让新章节从 1 重新
+                        // 编号，upsert 的 ON CONFLICT 会静默覆盖旧章节同 id 的原型
+                        let mut next_id =
+                            all_clusters.iter().map(|(c, _, _, _)| c).max().copied().unwrap_or(0) + 1;
+                        let mut protos: Vec<(i64, mm_embed::region::DpProto)> = all_clusters
                             .into_iter()
                             .filter(|&(_, ch, _, _)| ch == chapter_id)
                             .map(|(cid, _, vec, count)| (cid, mm_embed::region::DpProto { vec, count }))
                             .collect();
-                        let mut next_id = protos.iter().map(|(c, _)| c).max().copied().unwrap_or(0) + 1;
                         for (idx, b) in boxes.iter().enumerate() {
                             let v = &vecs[idx];
                             let proto_refs: Vec<mm_embed::region::DpProto> =

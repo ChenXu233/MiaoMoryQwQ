@@ -15,6 +15,8 @@ pub enum StoreError {
     Db(#[from] rusqlite::Error),
     #[error("分页游标无效")]
     InvalidCursor,
+    #[error("来源文件夹不存在（可能已被删除）")]
+    FolderMissing,
     #[error("核心错误：{0}")]
     Core(#[from] ErrorCode),
 }
@@ -150,6 +152,11 @@ pub const MIGRATIONS: &[&str] = &[
         created_at   INTEGER NOT NULL,
         PRIMARY KEY(index_id, cluster_id)
     );",
+    // v7：清淤——sentinel（region_idx=-1）曾把零向量写进 vec_regions，对任何归一化
+    // 查询返回固定 dist=1 并经 RRF 污染区域检索流（2026-09-12 走查 #2）；写入侧已改
+    // 为不写 vec 行，此处清存量。元数据行保留（「已处理」标记，防队首重提取）。
+    "DELETE FROM vec_regions WHERE region_id IN
+     (SELECT region_id FROM regions WHERE region_idx = -1);",
 ];
 
 /// 静态注册 sqlite-vec 扩展（对所有新连接生效）
@@ -285,6 +292,16 @@ impl Store {
 
     /// 插入新资产（pending 态）；**同工作区**哈希命中即返回既有 id（跨工作区允许同内容共存）
     pub fn insert_pending(&self, new: &NewAsset) -> Result<InsertOutcome> {
+        // 文件夹被并发删除（删除工作区与导入/同步的 TOCTOU）时拒绝写入，
+        // 避免产生 folder_id 悬空的不可见孤儿行；引擎侧按单条失败计数，不致命
+        let folder_exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM folders WHERE folder_id = ?1)",
+            params![new.folder_id],
+            |r| r.get(0),
+        )?;
+        if !folder_exists {
+            return Err(StoreError::FolderMissing);
+        }
         let inserted = self.conn.execute(
             "INSERT INTO assets (folder_id, sha256, storage_key, kind, taken_at, year, size, imported_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -417,9 +434,31 @@ impl Store {
             .optional()?)
     }
 
+    /// BEGIN IMMEDIATE 包裹（写锁由 busy_timeout 等待）；f 返回 Err 即整体回滚。
+    /// 多语句级联操作（删除/导入路径）保证原子性，中途失败不留半删状态。
+    fn with_tx<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        match f() {
+            Ok(v) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
     /// 批量删除；返回（删除数、未命中数）与不再被任何资产引用的 thumb_key 列表。
     /// 缩略图按内容共享（跨工作区同哈希同 key）：仅引用归零时才交由调用方删文件。
+    /// 事务化：行删除与缩略图引用计数在同一事务，中途失败整体回滚。
     pub fn delete_assets(&self, ids: &[i64]) -> Result<(usize, usize, Vec<String>)> {
+        self.with_tx(|| self.delete_assets_inner(ids))
+    }
+
+    /// 无事务版本（delete_folder 在更大事务内复用；单独调用走 delete_assets）。
+    fn delete_assets_inner(&self, ids: &[i64]) -> Result<(usize, usize, Vec<String>)> {
         let mut deleted = 0usize;
         let mut missing = 0usize;
         let mut thumb_keys = Vec::new();
@@ -772,6 +811,7 @@ impl Store {
 
     /// 写入一个区域（元数据 + 向量）。返回全局 region_id；
     /// 资产在提取期间被删除（删除工作区竞态，单张提取可达 30s）时返回 None。
+    /// sentinel（region_idx=-1）只写元数据不写向量。
     #[allow(clippy::too_many_arguments)]
     pub fn insert_region(
         &self,
@@ -805,13 +845,17 @@ impl Store {
             ],
         )?;
         let region_id = self.conn.last_insert_rowid();
-        let blob: &[u8] = unsafe {
-            std::slice::from_raw_parts(embedding.as_ptr().cast::<u8>(), embedding.len() * 4)
-        };
-        self.conn.execute(
-            "INSERT INTO vec_regions (region_id, embedding) VALUES (?1, ?2)",
-            params![region_id, blob],
-        )?;
+        // sentinel（region_idx=-1）只写元数据行做「已处理」标记：零向量入 vec 表会被
+        // KNN 命中（对任何归一化查询 dist=1），经 RRF 污染区域检索流（2026-09-12 走查 #2）
+        if region_idx != -1 {
+            let blob: &[u8] = unsafe {
+                std::slice::from_raw_parts(embedding.as_ptr().cast::<u8>(), embedding.len() * 4)
+            };
+            self.conn.execute(
+                "INSERT INTO vec_regions (region_id, embedding) VALUES (?1, ?2)",
+                params![region_id, blob],
+            )?;
+        }
         Ok(Some(region_id))
     }
 
@@ -888,7 +932,8 @@ impl Store {
              VALUES (2, ?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(index_id, cluster_id) DO UPDATE SET
                prototype = excluded.prototype,
-               member_count = excluded.member_count",
+               member_count = excluded.member_count,
+               chapter_id = excluded.chapter_id",
             params![cluster_id, chapter_id, blob, member_count, now],
         )?;
         Ok(())
@@ -1213,18 +1258,21 @@ impl Store {
     /// 删除整个来源文件夹（工作区）：级联其全部资产（各索引向量/区域/FTS/
     /// 缩略图引用计数），再删文件夹行本身。永不触碰磁盘原文件。
     /// 返回（删除资产数、引用归零的 thumb_key——调用方据此删缩略图文件）。
+    /// 事务化：资产级联与文件夹行删除原子生效，中途失败整体回滚（不留半删状态）。
     pub fn delete_folder(&self, folder_id: i64) -> Result<(usize, Vec<String>)> {
         let ids: Vec<i64> = self
             .conn
             .prepare("SELECT asset_id FROM assets WHERE folder_id = ?1")?
             .query_map(params![folder_id], |r| r.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let (deleted, _, thumb_keys) = self.delete_assets(&ids)?;
-        self.conn.execute(
-            "DELETE FROM folders WHERE folder_id = ?1",
-            params![folder_id],
-        )?;
-        Ok((deleted, thumb_keys))
+        self.with_tx(|| {
+            let (deleted, _, thumb_keys) = self.delete_assets_inner(&ids)?;
+            self.conn.execute(
+                "DELETE FROM folders WHERE folder_id = ?1",
+                params![folder_id],
+            )?;
+            Ok((deleted, thumb_keys))
+        })
     }
 
     // ---- 文本检索（P3；迁移 v3 起）----
@@ -1408,6 +1456,128 @@ mod tests {
             .insert_region(7, -1, (0, 0, 0, 0), 0.0, 0, -1, &[0.0; 512])
             .unwrap();
         assert_eq!(store.count_ready_without_regions().unwrap(), 0);
+    }
+
+    #[test]
+    fn sentinel_vector_not_written_to_vec_regions() {
+        // 走查 #2：sentinel 零向量不得进 vec_regions（对任何归一化查询 dist=1，
+        // 经 RRF 污染区域检索流）；元数据行保留做「已处理」标记
+        let store = Store::open_memory().unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO folders (folder_id, path, label, channel, status, added_at)
+                 VALUES (10, 'X:/p', NULL, 'local', 'online', 0)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO assets (asset_id, folder_id, sha256, storage_key, kind, year, status, imported_at)
+                 VALUES (7, 10, 'sha-region-2', 'p/c.jpg', 'photo', '2024', 'ready', 0)",
+                [],
+            )
+            .unwrap();
+        store
+            .insert_region(7, -1, (0, 0, 0, 0), 0.0, 0, -1, &[0.0; 512])
+            .unwrap()
+            .unwrap();
+        let vec_rows: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM vec_regions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(vec_rows, 0, "sentinel 不写 vec 行");
+        let marker: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM regions WHERE asset_id = 7 AND region_idx = -1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker, 1, "sentinel 元数据行保留");
+        // 正常区域向量照常写入并可被 KNN 命中
+        let v = vec![0.5f32; 512];
+        store
+            .insert_region(7, 0, (1, 2, 30, 40), 0.5, 0, 3, &v)
+            .unwrap()
+            .unwrap();
+        let hits = store.knn_regions(&v, 5).unwrap();
+        assert_eq!(hits.len(), 1, "KNN 只见真实区域，不见 sentinel");
+    }
+
+    #[test]
+    fn migration_v7_purges_legacy_sentinel_vectors() {
+        // 复刻 v7 之前的遗留状态：sentinel 元数据行 + 零向量 vec 行；
+        // 把 user_version 拨回 v6 重开库，v7 清淤应清 vec 行、保留标记行
+        let dir = std::env::temp_dir().join(format!("mm-store-v7-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("t.db");
+        {
+            let store = Store::open(&db_path).unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO folders (folder_id, path, label, channel, status, added_at)
+                     VALUES (10, 'X:/p', NULL, 'local', 'online', 0)",
+                    [],
+                )
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO assets (asset_id, folder_id, sha256, storage_key, kind, year, status, imported_at)
+                     VALUES (7, 10, 'sha-v7', 'p/a.jpg', 'photo', '2024', 'ready', 0)",
+                    [],
+                )
+                .unwrap();
+            let rid = store
+                .insert_region(7, -1, (0, 0, 0, 0), 0.0, 0, -1, &[0.0; 512])
+                .unwrap()
+                .unwrap();
+            // 当前版本 insert_region 已不写 sentinel vec 行；手工复刻 v6 遗留数据
+            store
+                .conn
+                .execute(
+                    "INSERT INTO vec_regions (region_id, embedding) VALUES (?1, zeroblob(2048))",
+                    params![rid],
+                )
+                .unwrap();
+            store
+                .conn
+                .pragma_update(None, "user_version", 6i64)
+                .unwrap();
+        }
+        let store = Store::open(&db_path).unwrap();
+        let vec_rows: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM vec_regions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(vec_rows, 0, "v7 清淤：遗留 sentinel 零向量被清除");
+        let marker: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM regions WHERE region_idx = -1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker, 1, "sentinel 元数据行保留（已处理标记）");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn insert_pending_rejects_missing_folder() {
+        // 走查 TOCTOU：文件夹被并发删除后拒绝写入，杜绝 folder_id 悬空的孤儿行
+        let store = Store::open_memory().unwrap();
+        let mut n = new_asset("sha-nofolder", 1_700_000_000);
+        n.folder_id = 999;
+        assert!(
+            matches!(store.insert_pending(&n), Err(StoreError::FolderMissing)),
+            "不存在的文件夹必须拒绝"
+        );
     }
 
     fn new_asset(sha: &str, taken_at: i64) -> NewAsset {
