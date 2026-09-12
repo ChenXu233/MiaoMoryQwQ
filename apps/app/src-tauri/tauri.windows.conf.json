@@ -1,5 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeDevCommand": "pnpm prepare:runtime && pnpm dev",
+    "beforeBuildCommand": "pnpm prepare:runtime && pnpm build"
+  },
   "bundle": {
     "resources": [
       "runtime/dml/*"
