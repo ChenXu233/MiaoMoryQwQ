@@ -127,6 +127,7 @@ jobs:
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File scripts/prepare-bundle-runtime.ps1
 
+      # -vv：tauri-bundler 仅在 debug 级别输出 candle/light 的 stderr，失败时没有它就是盲区
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -139,6 +140,7 @@ jobs:
           releaseBody: ${{ env.RELEASE_NOTES }}
           releaseDraft: false
           prerelease: true
+          args: -vv
           uploadUpdaterJson: true
 
   finalize:
