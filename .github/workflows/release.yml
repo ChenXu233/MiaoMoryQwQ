@@ -187,8 +187,11 @@ jobs:
       - name: 重生成 CHANGELOG.md
         run: git-cliff --config scripts/cliff.toml -o CHANGELOG.md
 
-      # GITHUB_TOKEN 的推送不触发 ci.yml（GitHub 规则），不会造成循环
-      - name: 版本回写提交到 main
+      # GITHUB_TOKEN 直推 main 受分支保护拦截（必需状态检查无法对回写提交先行通过），
+      # 故优先尝试 main，被拒则落 release-writeback 分支由所有者一键合并：
+      #   git pull origin release-writeback --ff-only
+      # （GITHUB_TOKEN 的推送不触发 ci.yml，无循环）
+      - name: 版本回写提交（main 或 release-writeback 分支）
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -199,7 +202,13 @@ jobs:
             exit 0
           fi
           git commit -m "chore(release): ${GITHUB_REF_NAME} 版本回写与更新日志"
-          git push origin HEAD:main
+          if git push origin HEAD:main 2>push_err.txt; then
+            echo "已回写 main"
+          else
+            cat push_err.txt
+            git push --force origin HEAD:refs/heads/release-writeback
+            echo "::warning::main 受分支保护，版本回写与 CHANGELOG 已推到 release-writeback 分支；请在本地执行 git pull origin release-writeback --ff-only 合并"
+          fi
 
       # 更新器自管端点：updater 分支只承载 latest.json，每次发布整体替换
       - name: latest.json 发布到 updater 分支
